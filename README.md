@@ -23,7 +23,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-stack_collections = "0.1.1"
+stack_collections = "0.1.2"
 ```
 
 ### StackString Example

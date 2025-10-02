@@ -2141,6 +2141,10 @@ impl<T, const CAP: usize> Default for StackVec<T, CAP> {
 }
 
 impl<T, const CAP: usize> Drop for StackVec<T, CAP> {
+    /// Drops the `StackVec`, cleaning up all initialized elements.
+    ///
+    /// This ensures that all elements stored in the vector are properly dropped
+    /// when the vector goes out of scope.
     #[inline]
     fn drop(&mut self) {
         self.drop_elements(0);
@@ -2304,6 +2308,9 @@ impl<T, const CAP: usize> DoubleEndedIterator for IntoIter<T, CAP> {
 impl<T, const CAP: usize> ExactSizeIterator for IntoIter<T, CAP> {}
 
 impl<T, const CAP: usize> Drop for IntoIter<T, CAP> {
+    /// Drops the iterator, cleaning up any remaining unyielded elements.
+    ///
+    /// This ensures that elements not consumed by the iterator are properly dropped.
     #[inline]
     fn drop(&mut self) {
         // Drop any remaining elements that weren't yielded.
@@ -2321,6 +2328,21 @@ impl<T, const CAP: usize> IntoIterator for StackVec<T, CAP> {
     type Item = T;
     type IntoIter = IntoIter<T, CAP>;
 
+    /// Converts the `StackVec` into an owning iterator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut v = StackVec::<i32, 8>::new();
+    /// v.push(1);
+    /// v.push(2);
+    /// v.push(3);
+    ///
+    /// let collected: Vec<_> = v.into_iter().collect();
+    /// assert_eq!(collected, vec![1, 2, 3]);
+    /// ```
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         let len = self.len;
