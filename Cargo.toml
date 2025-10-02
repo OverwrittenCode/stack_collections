@@ -1,0 +1,20 @@
+[package]
+name = "stack_collections"
+version = "0.1.0"
+edition = "2024"
+authors = ["Kyle Thapar <kylethapar2007@outlook.com>"]
+description = "Stack-allocated collections for Rust"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/OverwrittenCode/stack_collections"
+homepage = "https://github.com/OverwrittenCode/stack_collections"
+documentation = "https://docs.rs/stack_collections"
+keywords = ["stack", "vector", "string"]
+categories = ["data-structures"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["std"]
+std = []
