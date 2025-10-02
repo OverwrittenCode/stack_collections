@@ -1,3 +1,12 @@
+//! stack_collections: Stack-allocated collections for Rust
+//!
+//! Provides `StackString`, `StackVec`, and `StackArrayString`.
+//! These are fixed-capacity, stack-allocated collections designed for
+//! `no_std` environments, zero heap allocations, predictable memory usage,
+//! and deterministic performance.
+
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
 #![no_std]
 #![cfg_attr(feature = "std", allow(unused))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -46,7 +55,10 @@ pub type StackArrayString<const N: usize, const CAP: usize> = StackVec<StackStri
 
 /// A UTF-8–encoded, stack-allocated, fixed-capacity string.
 pub struct StackString<const N: usize> {
+    /// Internal buffer holding up to `N` bytes of UTF-8 text.
     buf: [MaybeUninit<u8>; N],
+
+    /// Current string length (in bytes).
     len: usize,
 }
 
@@ -357,7 +369,8 @@ impl<const N: usize> StackString<N> {
         if self.len + c.len_utf8() > N {
             None
         } else {
-            Some(unsafe { self.push_unchecked(c) })
+            unsafe { self.push_unchecked(c) };
+            Some(())
         }
     }
 
@@ -443,7 +456,8 @@ impl<const N: usize> StackString<N> {
         if self.len + s.len() > N {
             None
         } else {
-            Some(unsafe { self.push_str_unchecked(s) })
+            unsafe { self.push_str_unchecked(s) };
+            Some(())
         }
     }
 
@@ -814,7 +828,7 @@ impl<const N: usize> PartialOrd for StackString<N> {
     /// ```
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        self.as_str().partial_cmp(other.as_str())
+        Some(self.cmp(other))
     }
 }
 
@@ -861,7 +875,6 @@ impl<const N: usize> Hash for StackString<N> {
     ///
     /// assert_eq!(hasher1.finish(), hasher2.finish());
     /// ```
-
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.as_str().hash(state);
@@ -1052,7 +1065,10 @@ impl<const N: usize> fmt::Write for StackString<N> {
 
 /// A stack-allocated vector with a fixed capacity.
 pub struct StackVec<T, const CAP: usize> {
+    /// The underlying storage for elements, allocated on the stack.
     data: [MaybeUninit<T>; CAP],
+
+    /// The current number of initialized elements in the vector.
     len: usize,
 }
 
@@ -1213,7 +1229,8 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         if self.is_full() {
             None
         } else {
-            Some(unsafe { self.push_unchecked(value) })
+            unsafe { self.push_unchecked(value) };
+            Some(())
         }
     }
 
@@ -1298,7 +1315,8 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         if index > self.len || self.len >= CAP {
             None
         } else {
-            Some(unsafe { self.insert_unchecked(index, element) })
+            unsafe { self.insert_unchecked(index, element) };
+            Some(())
         }
     }
 
@@ -1610,7 +1628,6 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     ///
     /// The caller must ensure that `index < self.len()`.
     ///
-
     #[must_use]
     #[inline]
     pub const unsafe fn get_unchecked(&self, index: usize) -> &T {
@@ -2107,7 +2124,8 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         if self.len + slice.len() > CAP {
             None
         } else {
-            Some(unsafe { self.extend_from_slice_unchecked(slice) })
+            unsafe { self.extend_from_slice_unchecked(slice) };
+            Some(())
         }
     }
 }
@@ -2185,8 +2203,13 @@ impl<'a, T, const CAP: usize> IntoIterator for &'a mut StackVec<T, CAP> {
 
 /// Owning iterator for StackVec: supports double-ended iteration and is exact-size.
 pub struct IntoIter<T, const CAP: usize> {
+    /// The current front index of the iterator.
     start: usize,
+
+    /// The current back index of the iterator.
     end: usize,
+
+    /// The owned vector being iterated.
     v: StackVec<T, CAP>,
 }
 
@@ -2338,7 +2361,7 @@ impl<T, const CAP: usize> AsRef<[T]> for StackVec<T, CAP> {
     /// This is equivalent to [`Self::as_slice`].
     #[inline]
     fn as_ref(&self) -> &[T] {
-        &*self
+        self
     }
 }
 
@@ -2387,7 +2410,7 @@ impl<T: PartialEq, const CAP: usize> PartialEq for StackVec<T, CAP> {
     /// ```
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        &**self == &**other
+        **self == **other
     }
 }
 
@@ -2412,7 +2435,7 @@ impl<T: PartialOrd, const CAP: usize> PartialOrd for StackVec<T, CAP> {
     /// ```
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        (&**self).partial_cmp(&**other)
+        (**self).partial_cmp(&**other)
     }
 }
 
@@ -2434,7 +2457,7 @@ impl<T: Ord, const CAP: usize> Ord for StackVec<T, CAP> {
     /// ```
     #[inline]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        (&**self).cmp(&**other)
+        (**self).cmp(&**other)
     }
 }
 
@@ -2474,10 +2497,9 @@ impl<T: Hash, const CAP: usize> Hash for StackVec<T, CAP> {
     ///
     /// assert_eq!(hasher1.finish(), hasher2.finish());
     /// ```
-
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (&**self).hash(state);
+        (**self).hash(state);
     }
 }
 

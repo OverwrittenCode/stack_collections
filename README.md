@@ -2,7 +2,6 @@
 
 [![Crates.io](https://img.shields.io/crates/v/stack_collections.svg)](https://crates.io/crates/stack_collections)
 [![Documentation](https://docs.rs/stack_collections/badge.svg)](https://docs.rs/stack_collections)
-[![License](https://img.shields.io/crates/l/stack_collections.svg)](https://github.com/OverwrittenCode/stack_collections#license)
 
 Stack-allocated collections for Rust: fixed-capacity string and vector types that live entirely on the stack.
 
