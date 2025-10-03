@@ -1,6 +1,6 @@
 [package]
 name = "stack_collections"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["Kyle Thapar <kylethapar2007@outlook.com>"]
 description = "Stack-allocated collections for Rust"
@@ -9,11 +9,12 @@ readme = "README.md"
 repository = "https://github.com/OverwrittenCode/stack_collections"
 homepage = "https://github.com/OverwrittenCode/stack_collections"
 documentation = "https://docs.rs/stack_collections"
-keywords = ["stack", "vector", "string"]
-categories = ["data-structures"]
+keywords = ["stack", "collections", "no-heap"]
+categories = ["data-structures", "no-std", "no-std::no-alloc"]
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["std"]

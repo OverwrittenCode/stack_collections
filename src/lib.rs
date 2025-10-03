@@ -11,7 +11,6 @@
 #![cfg_attr(feature = "std", allow(unused))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -105,7 +104,7 @@ impl<const N: usize> StackString<N> {
     #[must_use]
     #[inline]
     pub const fn as_ptr(&self) -> *const u8 {
-        self.buf.as_ptr() as *const u8
+        self.buf.as_ptr().cast::<u8>()
     }
 
     /// Returns a mutable raw pointer to the string's buffer.
@@ -134,7 +133,7 @@ impl<const N: usize> StackString<N> {
     #[must_use]
     #[inline]
     pub const fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.buf.as_mut_ptr() as *mut u8
+        self.buf.as_mut_ptr().cast::<u8>()
     }
 
     /// Removes and returns the last char, without bound checking.
@@ -149,7 +148,7 @@ impl<const N: usize> StackString<N> {
 
         unsafe {
             let mut pos = self.len - 1;
-            let ptr = self.buf.as_ptr() as *const u8;
+            let ptr = self.buf.as_ptr().cast::<u8>();
 
             while pos > 0 && (ptr.add(pos).read() & TAG_CONT_MASK) == TAG_CONT {
                 pos -= 1;
@@ -313,7 +312,7 @@ impl<const N: usize> StackString<N> {
     ///
     /// # Panics
     ///
-    /// Panics if appending `c` would exceed the capacity (`self.len() + c.len_utf8() <= N`).
+    /// Panics if appending `c` would exceed the capacity (`self.len() + c.len_utf8() > N`).
     ///
     /// # Examples
     ///
@@ -347,7 +346,7 @@ impl<const N: usize> StackString<N> {
 
     /// Attempts to append a `char`.
     ///
-    /// Returns `None` if appending `c` would exceed the capacity (`self.len() + c.len_utf8() <= N`).
+    /// Returns `None` if appending `c` would exceed the capacity (`self.len() + c.len_utf8() > N`).
     ///
     /// # Examples
     ///
@@ -383,7 +382,7 @@ impl<const N: usize> StackString<N> {
     pub const unsafe fn push_str_unchecked(&mut self, s: &str) {
         let bytes = s.as_bytes();
         unsafe {
-            let dst = self.buf.as_mut_ptr().add(self.len) as *mut u8;
+            let dst = self.buf.as_mut_ptr().add(self.len).cast::<u8>();
             ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len())
         };
         self.len += bytes.len();
@@ -521,7 +520,7 @@ impl<const N: usize> StackString<N> {
     #[must_use]
     #[inline]
     pub const fn as_bytes(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.buf.as_ptr() as *const u8, self.len) }
+        unsafe { slice::from_raw_parts(self.buf.as_ptr().cast::<u8>(), self.len) }
     }
 
     /// Borrow the content as `&str`.
@@ -561,7 +560,7 @@ impl<const N: usize> StackString<N> {
     pub const fn as_mut_str(&mut self) -> &mut str {
         unsafe {
             str::from_utf8_unchecked_mut(slice::from_raw_parts_mut(
-                self.buf.as_mut_ptr() as *mut u8,
+                self.buf.as_mut_ptr().cast::<u8>(),
                 self.len,
             ))
         }
@@ -680,7 +679,7 @@ impl<const N: usize> StackString<N> {
     #[must_use]
     #[inline]
     pub const fn is_full(&self) -> bool {
-        self.len == N
+        self.len >= N
     }
 }
 
@@ -1013,7 +1012,7 @@ impl<const N: usize> Write for StackString<N> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8"))?;
 
         unsafe {
-            let dst = self.buf.as_mut_ptr().add(self.len) as *mut u8;
+            let dst = self.buf.as_mut_ptr().add(self.len).cast::<u8>();
             ptr::copy_nonoverlapping(buf.as_ptr(), dst, to_write);
             self.len += to_write;
         }
@@ -1167,7 +1166,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     ///
     /// # Panics
     ///
-    /// Panics if the vector is full (`self.len() == CAP`).
+    /// Panics if the vector is full (`self.len() >= CAP`).
     ///
     /// # Examples
     ///
@@ -1207,7 +1206,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
 
     /// Attempts to append a value.
     ///
-    /// Returns `None` if the vector is full (`self.len() == CAP`).
+    /// Returns `None` if the vector is full (`self.len() >= CAP`).
     ///
     /// # Examples
     ///
@@ -1253,20 +1252,21 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     ///
     /// # Panics
     ///
-    /// Panics if `index > self.len()` or if the vector is full (`self.len() == CAP`).
+    /// Panics if `index > self.len()` or if the vector is full (`self.len() >= CAP`).
     ///
     /// # Examples
     ///
     /// Basic usage:
     ///
     /// ```
-    /// use stack_collections::StackVec;;
+    /// use stack_collections::StackVec;
     ///
     /// let mut v = StackVec::<i32, 8>::new();
     /// v.push(1);
     /// v.push(3);
-    /// v.insert(1, 2);
+    /// assert_eq!(v.len(), 2);
     ///
+    /// v.insert(1, 2);
     /// assert_eq!(v.len(), 3);
     /// assert_eq!(v[0], 1);
     /// assert_eq!(v[1], 2);
@@ -1279,10 +1279,25 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     /// use stack_collections::StackVec;
     ///
     /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
+    /// v.push(40);
+    /// assert_eq!(v.len(), 1);
     ///
     /// // this will panic at runtime
-    /// v.insert(2, 2);
+    /// v.insert(2, 10);
+    /// ```
+    ///
+    /// A panic upon overflow:
+    ///
+    /// ```should_panic
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut v = StackVec::<i32, 2>::new();
+    /// v.push(40);
+    /// v.push(50);
+    /// assert!(v.is_full());
+    ///
+    /// // this will panic at runtime
+    /// v.insert(1, 19);
     /// ```
     ///
     #[inline]
@@ -1294,20 +1309,26 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
 
     /// Attempts to insert an element at `index`, shifting all elements after it.
     ///
-    /// Returns `None` if `index > self.len()` or if the vector is full (`self.len() == CAP`).
+    /// Returns `None` if `index > self.len()` or if the vector is full (`self.len() >= CAP`).
     ///
     /// # Examples
     ///
     /// ```
     /// use stack_collections::StackVec;
     ///
-    /// let mut v = StackVec::<i32, 2>::new();
-    /// v.push(1);
-    /// v.push(2);
+    /// let mut v = StackVec::<i32, 3>::new();
+    /// v.push(10);
+    /// v.push(20);
     ///
-    /// assert!(v.try_insert(1, 10).is_none());
     /// assert_eq!(v.len(), 2);
     ///
+    /// // index out of bounds
+    /// assert!(v.try_insert(3, 30).is_none());
+    ///
+    /// assert!(v.try_insert(1, 30).is_some());
+    /// assert_eq!(v.len(), 3);
+    ///
+    /// // Vector is full
     /// assert!(v.try_insert(3, 10).is_none());
     /// ```
     #[inline]
@@ -1939,7 +1960,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     #[must_use]
     #[inline]
     pub const fn is_full(&self) -> bool {
-        self.len == CAP
+        self.len >= CAP
     }
 
     /// Returns the contents as a slice.
@@ -2721,6 +2742,8 @@ impl<T, const CAP: usize> IndexMut<usize> for StackVec<T, CAP> {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
