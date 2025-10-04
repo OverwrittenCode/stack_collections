@@ -23,7 +23,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-stack_collections = "0.2.0"
+stack_collections = "0.3.0"
 ```
 
 ### StackString Example
@@ -32,16 +32,16 @@ stack_collections = "0.2.0"
 use stack_collections::StackString;
 
 fn main() {
-    let mut s = StackString::<32>::new();
-    s.push_str("Hello, ");
-    s.push_str("world!");
+    let mut stack_string = StackString::<32>::new();
+    stack_string.push_str("Hello, ");
+    stack_string.push_str("world!");
 
-    println!("String: {}", s);
-    println!("Length: {}", s.len());
-    println!("Capacity: {}", s.capacity());
+    println!("String: {}", stack_string);
+    println!("Length: {}", stack_string.len());
+    println!("Capacity: {}", stack_string.capacity());
 
     // Pop characters
-    while let Some(c) = s.try_pop() {
+    while let Some(c) = stack_string.try_pop() {
         println!("Popped: {}", c);
     }
 }
@@ -53,17 +53,17 @@ fn main() {
 use stack_collections::StackVec;
 
 fn main() {
-    let mut v = StackVec::<i32, 8>::new();
+    let mut vec = StackVec::<i32, 8>::new();
 
     for i in 1..=5 {
-        v.push(i);
+        vec.push(i);
     }
 
-    println!("Vector: {:?}", v);
-    println!("Sum: {}", v.iter().sum::<i32>());
+    println!("Vector: {:?}", vec);
+    println!("Sum: {}", vec.iter().sum::<i32>());
 
-    v.retain(|x| *x % 2 == 0);
-    println!("Even numbers: {:?}", v);
+    vec.retain(|x| *x < 4);
+    println!("Numbers less than 4: {:?}", vec);
 }
 ```
 
@@ -115,8 +115,8 @@ undefined behavior even when capacity is exceeded (operations will panic or retu
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 
