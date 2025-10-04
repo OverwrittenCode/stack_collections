@@ -356,9 +356,6 @@ impl<const N: usize> StackString<N> {
         const TAG_TWO_B: u8 = 0b1100_0000;
         const TAG_THREE_B: u8 = 0b1110_0000;
         const TAG_FOUR_B: u8 = 0b1111_0000;
-        const MAX_ONE_B: u32 = 0x80;
-        const MAX_TWO_B: u32 = 0x800;
-        const MAX_THREE_B: u32 = 0x10000;
 
         let code = c as u32;
 
