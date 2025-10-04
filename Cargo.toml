@@ -1,6 +1,6 @@
 [package]
 name = "stack_collections"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Kyle Thapar <kylethapar2007@outlook.com>"]
 description = "Stack-allocated collections for Rust"
@@ -18,5 +18,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["std"]
-std = []
+std = ["alloc"]
+alloc = []
 nightly = []

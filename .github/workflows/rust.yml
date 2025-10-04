@@ -1,4 +1,4 @@
-name: Rust CI
+name: CI
 
 on:
   push:
@@ -6,62 +6,177 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
 
 jobs:
-  build-and-docs:
+  # Test on stable with all feature combinations
+  stable:
+    name: Stable (${{ matrix.name }})
     runs-on: ubuntu-latest
-
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "no_std"
+            flags: "--no-default-features"
+          - name: "alloc"
+            flags: "--no-default-features --features alloc"
+          - name: "std"
+            flags: "--features std"
+          - name: "default"
+            flags: ""
     steps:
-      # Checkout code
       - uses: actions/checkout@v4
 
-      # Cache Cargo registry and git sources
-      - name: Cache Cargo registry
-        uses: actions/cache@v3
+      - name: Cache Cargo
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.name }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-stable-
+            ${{ runner.os }}-cargo-
 
-      # Cache Cargo build artifacts
-      - name: Cache Cargo target directory
-        uses: actions/cache@v3
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build ${{ matrix.flags }} --verbose
+
+      - name: Test
+        run: cargo test ${{ matrix.flags }} --verbose
+
+  # Test on nightly with nightly feature
+  nightly:
+    name: Nightly (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "no_std"
+            flags: "--no-default-features"
+          - name: "alloc"
+            flags: "--no-default-features --features alloc"
+          - name: "std+nightly"
+            flags: "--features std,nightly"
+          - name: "all-features"
+            flags: "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
         with:
-          path: target
-          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-target-${{ runner.os }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.name }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-nightly-
+            ${{ runner.os }}-cargo-
 
-      # Install stable Rust for CI
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Build
+        run: cargo build ${{ matrix.flags }} --verbose
+
+      - name: Test
+        run: cargo test ${{ matrix.flags }} --verbose
+
+  # Clippy linting on all features
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      # Lint (excluding nightly feature)
-      - name: Clippy check
-        run: cargo clippy --all-targets --features std -- -D warnings
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -Dclippy::all -Dclippy::pedantic -Dclippy::nursery
 
-      # Run tests (excluding nightly feature)
-      - name: Run tests
-        run: cargo test --features std --verbose
+  # Format check
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
 
-      # Build crate (excluding nightly feature)
-      - name: Build crate
-        run: cargo build --features std --verbose
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
-      - name: Build with no-default-features
-        run: cargo build --no-default-features --verbose
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      # --- Docs.rs using nightly ---
-      - name: Install nightly Rust
-        uses: dtolnay/rust-toolchain@nightly
+  # Documentation
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTDOCFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Install cargo-docs-rs
-        uses: dtolnay/install@cargo-docs-rs
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: dtolnay/install@cargo-docs-rs
 
       - name: Build docs.rs documentation
         run: cargo docs-rs
+
+      - name: Build docs (all features)
+        run: cargo doc --no-deps --all-features
+
+  # Minimal versions
+  minimal:
+    name: Minimal versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Generate minimal lockfile
+        run: cargo generate-lockfile -Z minimal-versions
+
+      - name: Check with minimal versions
+        run: cargo check --locked --all-features
+
+  # Miri for undefined behavior detection
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@miri
+
+      - name: Setup Miri
+        run: cargo miri setup
+
+      - name: Test with Miri (all features)
+        run: cargo miri test --all-features
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
