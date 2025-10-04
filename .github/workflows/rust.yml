@@ -49,12 +49,9 @@ jobs:
       - name: Run tests
         run: cargo test --features std --verbose
 
-      # Build crate & examples (excluding nightly feature)
+      # Build crate (excluding nightly feature)
       - name: Build crate
         run: cargo build --features std --verbose
-
-      - name: Build examples
-        run: cargo build --examples --verbose
 
       - name: Build with no-default-features
         run: cargo build --no-default-features --verbose
