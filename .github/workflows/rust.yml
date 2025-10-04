@@ -111,7 +111,7 @@ jobs:
       - name: Clippy (all features)
         run: cargo clippy --all-targets --all-features -- -Dclippy::all -Dclippy::pedantic -Dclippy::nursery
 
-  # Format check
+  # Rustfmt check
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
