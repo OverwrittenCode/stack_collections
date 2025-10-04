@@ -752,7 +752,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
                 for item in slice {
                     // SAFETY: Caller guarantees sufficient capacity
                     unsafe {
-                        self.push_unchecked(item.clone());;
+                        self.push_unchecked(item.clone());
                     }
                 }
             } else {
@@ -908,7 +908,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     /// # Examples
     ///
     /// ```
-    /// use stack_collections::StackVec;;
+    /// use stack_collections::StackVec;
     ///
     ///  let mut vec = StackVec::<i32, 8>::new();
     /// vec.push(1);
@@ -930,7 +930,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     /// # Examples
     ///
     /// ```
-    /// use stack_collections::StackVec;;
+    /// use stack_collections::StackVec;
     ///
     ///  let mut vec = StackVec::<i32, 8>::new();
     /// vec.push(1);
