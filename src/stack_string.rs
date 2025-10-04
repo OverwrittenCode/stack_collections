@@ -514,6 +514,9 @@ impl<const N: usize> StackString<N> {
                 /// Basic usage:
                 ///
                 /// ```
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
@@ -527,6 +530,9 @@ impl<const N: usize> StackString<N> {
                 /// A panic upon overflow:
                 ///
                 /// ```should_panic
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
@@ -539,6 +545,9 @@ impl<const N: usize> StackString<N> {
             }
             try: {
                 /// ```
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
@@ -780,6 +789,9 @@ impl<const N: usize> StackString<N> {
                 /// Basic usage:
                 ///
                 /// ```
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
@@ -795,6 +807,9 @@ impl<const N: usize> StackString<N> {
                 /// A panic if the index is out of bounds:
                 ///
                 /// ```should_panic
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
@@ -809,6 +824,9 @@ impl<const N: usize> StackString<N> {
                 /// A panic upon overflow:
                 ///
                 /// ```should_panic
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
@@ -821,6 +839,9 @@ impl<const N: usize> StackString<N> {
             }
             try: {
                 /// ```
+                /// #![feature(ascii_char)]
+                /// #![feature(ascii_char_variants)]
+                ///
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
