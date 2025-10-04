@@ -1722,6 +1722,8 @@ impl<T, const CAP: usize> IndexMut<usize> for StackVec<T, CAP> {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
