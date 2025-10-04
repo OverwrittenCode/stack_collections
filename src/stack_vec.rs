@@ -836,16 +836,19 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     where
         F: FnMut(&mut T) -> bool,
     {
+        let base_ptr = self.as_mut_ptr();
         let mut kept = 0;
+
         for i in 0..self.len {
             // SAFETY: i < self.len, so this is a valid and initialized element
-            let ptr = unsafe { self.as_mut_ptr().add(i) };
+            let ptr = unsafe { base_ptr.add(i) };
             // SAFETY: ptr points to valid initialized element
             let elem = unsafe { &mut *ptr };
+
             if f(elem) {
                 if kept != i {
                     // SAFETY: kept < i < self.len, ranges don't overlap
-                    let dst = unsafe { self.as_mut_ptr().add(kept) };
+                    let dst = unsafe { base_ptr.add(kept) };
                     // SAFETY: Copying single element from valid source to valid dest
                     unsafe {
                         ptr::copy_nonoverlapping(ptr, dst, 1);
@@ -862,7 +865,6 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
 
         self.len = kept;
     }
-
     /// Returns the contents as a slice.
     ///
     /// # Examples

@@ -551,7 +551,7 @@ impl<const N: usize> StackString<N> {
                 /// use stack_collections::StackString;
                 /// use core::ascii::Char;
                 ///
-                /// let mut stack_string = StackString::<3>::new();
+                /// let mut stack_string = StackString::<2>::new();
                 /// assert!(stack_string.try_push_ascii(Char::SmallA).is_some());
                 /// assert_eq!(stack_string.len(), 1);
                 ///
