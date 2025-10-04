@@ -41,17 +41,17 @@ jobs:
         with:
           components: clippy
 
-      # Lint
+      # Lint (excluding nightly feature)
       - name: Clippy check
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --features std -- -D warnings
 
-      # Run tests
+      # Run tests (excluding nightly feature)
       - name: Run tests
-        run: cargo test --all-features --verbose
+        run: cargo test --features std --verbose
 
-      # Build crate & examples
+      # Build crate & examples (excluding nightly feature)
       - name: Build crate
-        run: cargo build --all-features --verbose
+        run: cargo build --features std --verbose
 
       - name: Build examples
         run: cargo build --examples --verbose
