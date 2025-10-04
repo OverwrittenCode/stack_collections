@@ -9,6 +9,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 #![no_std]
 #![cfg_attr(feature = "std", allow(unused))]
+#![cfg_attr(feature = "nightly", feature(ascii_char))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(feature = "std")]
@@ -28,6 +29,99 @@ use std::{
     io::{self, Write},
     string::String,
 };
+
+/// Helper macro to define unchecked, normal, and try variants of a method.
+macro_rules! define_variants {
+    (
+        $(#[$meta:meta])*
+        fn $name:ident(&mut $self:ident $(, $param:ident: $param_ty:ty)*) $(-> $ret:ty)?,
+        $(where_clause: { $($where_clause:tt)* } )?
+
+        normal_brief: $normal_brief:literal,
+        try_brief: $try_brief:literal,
+        unchecked_brief_suffix: $unchecked_brief_suffix:literal,
+        checks: {
+            $($check:expr => $error:literal),+ $(,)?
+        },
+        prefixes: {
+            normal: {$($normal_prefix:tt)*},
+            unchecked: {$($unchecked_prefix:tt)*},
+            try: {$($try_prefix:tt)*},
+        },
+        unchecked_fn: $unchecked_fn:ident,
+        try_fn: $try_fn:ident,
+
+        body: { $($body:tt)* },
+
+        $(examples: {
+            normal: { $($ex_normal:tt)* }
+            try: { $($ex_try:tt)* }
+        })?
+    ) => {
+        $(#[$meta])*
+        #[doc = concat!(" ", $normal_brief, ", ", $unchecked_brief_suffix, ".")]
+        ///
+        #[doc = concat!("See also [`Self::", stringify!($name), "`] for the safe version and [`Self::", stringify!($try_fn), "`] for the `Option` returning version.")]
+        ///
+        /// # Safety
+        ///
+        /// Calling this function when any of the following conditions are **`true`** is **undefined behavior**:
+        $( #[doc = concat!(" - `", stringify!($check), "`")] )+
+        #[inline]
+        $($unchecked_prefix)* unsafe fn $unchecked_fn(&mut $self $(, $param: $param_ty)*) $(-> $ret)?
+        $(where $($where_clause)*)?
+        {
+            $($body)*
+        }
+        $(#[$meta])*
+        #[doc = concat!(" ", $normal_brief, ".")]
+        ///
+        #[doc = concat!("See also [`Self::", stringify!($unchecked_fn), "`] for the unchecked version and [`Self::", stringify!($try_fn), "`] for the `Option` returning version.")]
+        ///
+        /// # Panics
+        ///
+        $( #[doc = concat!(" - \"", $error, "\" if `", stringify!($check), "`")] )+
+        $(
+            ///
+            /// # Examples
+            ///
+            $($ex_normal)*
+        )?
+        #[inline]
+        $($normal_prefix)* fn $name(&mut $self $(, $param: $param_ty)*) $(-> $ret)?
+        $(where $($where_clause)*)?
+        {
+            $( assert!(!($check), $error); )+
+            unsafe { $self.$unchecked_fn($($param),*) }
+        }
+
+        $(#[$meta])*
+        #[doc = concat!(" ", $try_brief, ".")]
+        ///
+        #[doc = concat!("See also [`Self::", stringify!($name), "`] for the panic-on-error version and [`Self::", stringify!($unchecked_fn), "`] for the unchecked version.")]
+        ///
+        /// Returns `None` if any of these conditions are **`false`**:
+        $( #[doc = concat!(" - `", stringify!($check), "`")] )+
+        $(
+            ///
+            /// # Examples
+            ///
+            $($ex_try)*
+        )?
+        #[must_use]
+        #[inline]
+        $($try_prefix)* fn $try_fn(&mut $self $(, $param: $param_ty)*) $(-> Option<$ret>)?
+        $(where $($where_clause)*)?
+        {
+            $( if $check { return None; } )+
+            let result = unsafe { $self.$unchecked_fn($($param),*) };
+            Some(result)
+        }
+    };
+}
+
+#[cfg(feature = "nightly")]
+use core::ascii::Char;
 
 /// A stack-allocated array of small strings.
 ///
@@ -136,143 +230,128 @@ impl<const N: usize> StackString<N> {
         self.buf.as_mut_ptr().cast::<u8>()
     }
 
-    /// Removes and returns the last char, without bound checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `self.len() > 0`.
-    #[inline]
-    pub const unsafe fn pop_unchecked(&mut self) -> char {
-        const TAG_CONT_MASK: u8 = 0b1100_0000;
-        const TAG_CONT: u8 = 0b1000_0000;
+    define_variants! {
+        fn pop(&mut self) -> char,
 
-        unsafe {
-            let mut pos = self.len - 1;
-            let ptr = self.buf.as_ptr().cast::<u8>();
+        normal_brief: "Removes and returns the last char",
+        try_brief: "Attempts to remove and return the last char",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            self.is_empty() => "string is empty",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: pop_unchecked,
+        try_fn: try_pop,
+        body: {
+            const TAG_CONT_MASK: u8 = 0b1100_0000;
+            const TAG_CONT: u8 = 0b1000_0000;
 
-            while pos > 0 && (ptr.add(pos).read() & TAG_CONT_MASK) == TAG_CONT {
-                pos -= 1;
+            unsafe {
+                let mut pos = self.len - 1;
+                let ptr = self.buf.as_ptr().cast::<u8>();
+
+                while pos > 0 && (ptr.add(pos).read() & TAG_CONT_MASK) == TAG_CONT {
+                    pos -= 1;
+                }
+
+                let first_byte = ptr.add(pos).read();
+                let code = match self.len - pos {
+                    1 => first_byte as u32,
+                    2 => {
+                        let b1 = first_byte as u32;
+                        let b2 = ptr.add(pos + 1).read() as u32;
+                        ((b1 & 0x1F) << 6) | (b2 & 0x3F)
+                    }
+                    3 => {
+                        let b1 = first_byte as u32;
+                        let b2 = ptr.add(pos + 1).read() as u32;
+                        let b3 = ptr.add(pos + 2).read() as u32;
+                        ((b1 & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+                    }
+                    4 => {
+                        let b1 = first_byte as u32;
+                        let b2 = ptr.add(pos + 1).read() as u32;
+                        let b3 = ptr.add(pos + 2).read() as u32;
+                        let b4 = ptr.add(pos + 3).read() as u32;
+                        ((b1 & 0x07) << 18) | ((b2 & 0x3F) << 12) | ((b3 & 0x3F) << 6) | (b4 & 0x3F)
+                    }
+                    _ => unreachable_unchecked(),
+                };
+
+                self.len = pos;
+                char::from_u32_unchecked(code)
             }
-
-            let first_byte = ptr.add(pos).read();
-            let code = match self.len - pos {
-                1 => first_byte as u32,
-                2 => {
-                    let b1 = first_byte as u32;
-                    let b2 = ptr.add(pos + 1).read() as u32;
-                    ((b1 & 0x1F) << 6) | (b2 & 0x3F)
-                }
-                3 => {
-                    let b1 = first_byte as u32;
-                    let b2 = ptr.add(pos + 1).read() as u32;
-                    let b3 = ptr.add(pos + 2).read() as u32;
-                    ((b1 & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
-                }
-                4 => {
-                    let b1 = first_byte as u32;
-                    let b2 = ptr.add(pos + 1).read() as u32;
-                    let b3 = ptr.add(pos + 2).read() as u32;
-                    let b4 = ptr.add(pos + 3).read() as u32;
-                    ((b1 & 0x07) << 18) | ((b2 & 0x3F) << 12) | ((b3 & 0x3F) << 6) | (b4 & 0x3F)
-                }
-                _ => unreachable_unchecked(),
-            };
-
-            self.len = pos;
-            char::from_u32_unchecked(code)
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push_str("abc");
+                ///
+                /// assert_eq!(s.pop(), 'c');
+                /// assert_eq!(s.as_str(), "ab");
+                /// assert_eq!(s.len(), 2);
+                ///
+                /// assert_eq!(s.pop(), 'b');
+                /// assert_eq!(s.pop(), 'a');
+                /// assert!(s.is_empty());
+                /// ```
+                ///
+                /// Multibyte UTF-8 characters:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<16>::new();
+                /// s.push_str("hello😀world");
+                ///
+                /// assert_eq!(s.pop(), 'd');
+                /// assert_eq!(s.pop(), 'l');
+                /// assert_eq!(s.pop(), 'r');
+                /// assert_eq!(s.pop(), 'o');
+                /// assert_eq!(s.pop(), 'w');
+                /// assert_eq!(s.pop(), '😀');
+                /// assert_eq!(s.as_str(), "hello");
+                /// ```
+                ///
+                /// A panic if the string is empty:
+                ///
+                ///```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                ///
+                /// // this will panic at runtime
+                /// s.pop();
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// assert!(s.try_pop().is_none());
+                ///
+                /// s.push_str("hi");
+                /// assert_eq!(s.try_pop(), Some('i'));
+                /// assert_eq!(s.try_pop(), Some('h'));
+                /// assert_eq!(s.try_pop(), None);
+                /// ```
+            }
         }
     }
 
-    /// Removes and returns the last char.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the string is empty (`self.len() == 0`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<8>::new();
-    /// s.push_str("abc");
-    ///
-    /// assert_eq!(s.pop(), 'c');
-    /// assert_eq!(s.as_str(), "ab");
-    /// assert_eq!(s.len(), 2);
-    ///
-    /// assert_eq!(s.pop(), 'b');
-    /// assert_eq!(s.pop(), 'a');
-    /// assert!(s.is_empty());
-    /// ```
-    ///
-    /// Multibyte UTF-8 characters:
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<16>::new();
-    /// s.push_str("hello😀world");
-    ///
-    /// assert_eq!(s.pop(), 'd');
-    /// assert_eq!(s.pop(), 'l');
-    /// assert_eq!(s.pop(), 'r');
-    /// assert_eq!(s.pop(), 'o');
-    /// assert_eq!(s.pop(), 'w');
-    /// assert_eq!(s.pop(), '😀');
-    /// assert_eq!(s.as_str(), "hello");
-    /// ```
-    ///
-    /// A panic if the string is empty:
-    ///
-    ///```should_panic
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<8>::new();
-    ///
-    /// // this will panic at runtime
-    /// s.pop();
-    /// ```
-    #[inline]
-    pub const fn pop(&mut self) -> char {
-        self.try_pop().expect("string is empty")
-    }
-
-    /// Attempts to remove and return the last char.
-    ///
-    /// Returns `None` if the string is empty (`self.len() == 0`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<8>::new();
-    /// assert!(s.try_pop().is_none());
-    ///
-    /// s.push_str("hi");
-    /// assert_eq!(s.try_pop(), Some('i'));
-    /// assert_eq!(s.try_pop(), Some('h'));
-    /// assert_eq!(s.try_pop(), None);
-    /// ```
-    #[inline]
-    pub const fn try_pop(&mut self) -> Option<char> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(unsafe { self.pop_unchecked() })
-        }
-    }
-
-    /// Appends a `char`, without bound checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `self.len() + c.len_utf8() <= N`.
-    #[inline]
-    pub const unsafe fn push_unchecked(&mut self, c: char) {
+    /// Writes `c` to `dst`
+    #[inline(always)]
+    const unsafe fn write_char_to_ptr(&mut self, dst: *mut u8, c: char, c_len: usize) {
         const TAG_CONT: u8 = 0b1000_0000;
         const TAG_TWO_B: u8 = 0b1100_0000;
         const TAG_THREE_B: u8 = 0b1110_0000;
@@ -283,180 +362,547 @@ impl<const N: usize> StackString<N> {
 
         let code = c as u32;
 
-        unsafe {
-            let dst = self.buf.as_mut_ptr().add(self.len) as *mut u8;
-
-            if code < MAX_ONE_B {
-                dst.write(code as u8);
-                self.len += 1;
-            } else if code < MAX_TWO_B {
-                dst.write(TAG_TWO_B | ((code >> 6) as u8));
-                dst.add(1).write(TAG_CONT | ((code & 0x3F) as u8));
-                self.len += 2;
-            } else if code < MAX_THREE_B {
-                dst.write(TAG_THREE_B | ((code >> 12) as u8));
-                dst.add(1).write(TAG_CONT | (((code >> 6) & 0x3F) as u8));
-                dst.add(2).write(TAG_CONT | ((code & 0x3F) as u8));
-                self.len += 3;
-            } else {
-                dst.write(TAG_FOUR_B | ((code >> 18) as u8));
-                dst.add(1).write(TAG_CONT | (((code >> 12) & 0x3F) as u8));
-                dst.add(2).write(TAG_CONT | (((code >> 6) & 0x3F) as u8));
-                dst.add(3).write(TAG_CONT | ((code & 0x3F) as u8));
-                self.len += 4;
+        match c_len {
+            1 => {
+                unsafe {
+                    dst.write(code as u8);
+                };
+            }
+            2 => {
+                unsafe {
+                    dst.write(TAG_TWO_B | ((code >> 6) as u8));
+                    dst.add(1).write(TAG_CONT | ((code & 0x3F) as u8));
+                };
+            }
+            3 => {
+                unsafe {
+                    dst.write(TAG_THREE_B | ((code >> 12) as u8));
+                    dst.add(1).write(TAG_CONT | (((code >> 6) & 0x3F) as u8));
+                    dst.add(2).write(TAG_CONT | ((code & 0x3F) as u8));
+                };
+            }
+            _ => {
+                unsafe {
+                    dst.write(TAG_FOUR_B | ((code >> 18) as u8));
+                    dst.add(1).write(TAG_CONT | (((code >> 12) & 0x3F) as u8));
+                    dst.add(2).write(TAG_CONT | (((code >> 6) & 0x3F) as u8));
+                    dst.add(3).write(TAG_CONT | ((code & 0x3F) as u8));
+                };
             }
         }
     }
 
-    /// Appends a `char`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if appending `c` would exceed the capacity (`self.len() + c.len_utf8() > N`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<16>::new();
-    /// s.push('a');
-    /// s.push('😀');
-    /// s.push('z');
-    /// assert_eq!(s.as_str(), "a😀z");
-    /// assert_eq!(s.len(), 6);
-    /// ```
-    ///
-    /// A panic upon overflow:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<1>::new();
-    /// s.push('a');
-    ///
-    /// // this will panic at runtime
-    /// s.push('b');
-    #[inline]
-    pub const fn push(&mut self, c: char) {
-        self.try_push(c).expect("buffer capacity exceeded");
-    }
+    // push
+    define_variants! {
+        fn push(&mut self, c: char) -> (),
 
-    /// Attempts to append a `char`.
-    ///
-    /// Returns `None` if appending `c` would exceed the capacity (`self.len() + c.len_utf8() > N`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<5>::new();
-    /// assert!(s.try_push('a').is_some());
-    /// assert_eq!(s.len(), 1);
-    ///
-    /// assert!(s.try_push('😀').is_some());
-    /// assert_eq!(s.len(), 5);
-    ///
-    /// assert!(s.try_push('x').is_none());
-    /// assert_eq!(s.as_str(), "a😀");
-    /// ```
-    #[inline]
-    pub const fn try_push(&mut self, c: char) -> Option<()> {
-        if self.len + c.len_utf8() > N {
-            None
-        } else {
-            unsafe { self.push_unchecked(c) };
-            Some(())
+        normal_brief: "Appends a char",
+        try_brief: "Attempts to append a char",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            self.len() + c.len_utf8() > N => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: push_unchecked,
+        try_fn: try_push,
+
+        body: {
+            let n = c.len_utf8();
+            unsafe {
+                let dst = self.buf.as_mut_ptr().add(self.len).cast::<u8>();
+                self.write_char_to_ptr(dst, c, n);
+            }
+            self.len += n;
+        },
+
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<16>::new();
+                /// s.push('a');
+                /// s.push('😀');
+                /// s.push('z');
+                /// assert_eq!(s.as_str(), "a😀z");
+                /// assert_eq!(s.len(), 6);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<1>::new();
+                /// s.push('a');
+                ///
+                /// // this will panic at runtime
+                /// s.push('b');
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<5>::new();
+                /// assert!(s.try_push('a').is_some());
+                /// assert_eq!(s.len(), 1);
+                /// assert!(s.try_push('😀').is_some());
+                /// assert_eq!(s.len(), 5);
+                ///
+                /// assert!(s.try_push('x').is_none());
+                /// assert_eq!(s.as_str(), "a😀");
+                /// ```
+            }
         }
     }
 
-    /// Appends a `&str`, without bound checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `self.len() + s.len() <= N`.
-    #[inline]
-    pub const unsafe fn push_str_unchecked(&mut self, s: &str) {
-        let bytes = s.as_bytes();
-        unsafe {
-            let dst = self.buf.as_mut_ptr().add(self.len).cast::<u8>();
-            ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len())
-        };
-        self.len += bytes.len();
+    // push_ascii
+    define_variants! {
+        #[cfg(feature = "nightly")]
+        #[cfg_attr(docsrs, doc(cfg(feature = "nightly")))]
+        fn push_ascii(&mut self, ascii: Char) -> (),
+
+        normal_brief: "Appends an ASCII character",
+        try_brief: "Attempts to push an ASCII character",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            self.is_full() => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: push_ascii_unchecked,
+        try_fn: try_push_ascii,
+        body: {
+            unsafe {
+                self.buf
+                    .as_mut_ptr()
+                    .add(self.len)
+                    .cast::<u8>()
+                    .write(ascii as u8);
+            };
+            self.len += 1;
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<16>::new();
+                /// s.push_ascii(Char::SmallA);
+                /// s.push_ascii(Char::SmallZ);
+                /// assert_eq!(s.as_str(), "az");
+                /// assert_eq!(s.len(), 2);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<1>::new();
+                /// s.push_ascii(Char::SmallA);
+                ///
+                /// // this will panic at runtime
+                /// s.push_ascii(Char::SmallB);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<3>::new();
+                /// assert!(s.try_push_ascii(Char::SmallA).is_some());
+                /// assert_eq!(s.len(), 1);
+                ///
+                /// assert!(s.try_push_ascii(Char::SmallB).is_some());
+                /// assert_eq!(s.len(), 2);
+                ///
+                /// assert!(s.try_push_ascii(Char::SmallX).is_none());
+                /// assert_eq!(s.as_str(), "ab");
+                /// ```
+            }
+        }
     }
 
-    /// Appends a `&str`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if appending `s` would exceed the capacity (`self.len() + s.len() > N`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<32>::new();
-    /// s.push_str("hello");
-    /// assert_eq!(s.as_str(), "hello");
-    /// assert_eq!(s.len(), 5);
-    ///
-    /// s.push_str(" world");
-    /// assert_eq!(s.as_str(), "hello world");
-    /// assert_eq!(s.len(), 11);
-    ///
-    /// s.push_str("");
-    /// assert_eq!(s.as_str(), "hello world");
-    /// assert_eq!(s.len(), 11);
-    /// ```
-    ///
-    /// A panic upon overflow:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<4>::new();
-    ///
-    /// // this will panic at runtime
-    /// s.push_str("hello");
-    /// ```
-    #[inline]
-    pub const fn push_str(&mut self, s: &str) {
-        self.try_push_str(s).expect("buffer capacity exceeded");
+    // push_str
+    define_variants! {
+        fn push_str(&mut self, s: &str) -> (),
+
+        normal_brief: "Appends a `&str`",
+        try_brief: "Attempts to append a `&str`",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            self.len + s.len() > N => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: push_str_unchecked,
+        try_fn: try_push_str,
+        body: {
+            let bytes = s.as_bytes();
+            unsafe {
+                let dst = self.buf.as_mut_ptr().add(self.len).cast::<u8>();
+                ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len())
+            };
+            self.len += bytes.len();
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<32>::new();
+                /// s.push_str("hello");
+                /// assert_eq!(s.as_str(), "hello");
+                /// assert_eq!(s.len(), 5);
+                ///
+                /// s.push_str(" world");
+                /// assert_eq!(s.as_str(), "hello world");
+                /// assert_eq!(s.len(), 11);
+                ///
+                /// s.push_str("");
+                /// assert_eq!(s.as_str(), "hello world");
+                /// assert_eq!(s.len(), 11);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<4>::new();
+                ///
+                /// // this will panic at runtime
+                /// s.push_str("hello");
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// assert!(s.try_push_str("hello").is_some());
+                /// assert_eq!(s.as_str(), "hello");
+                ///
+                /// assert!(s.try_push_str("world").is_none());
+                /// assert_eq!(s.as_str(), "hello");
+                ///
+                /// assert!(s.try_push_str("!!!").is_some());
+                /// assert_eq!(s.as_str(), "hello!!!");
+                /// ```
+            }
+        }
     }
 
-    /// Attempts to append a `&str`.
-    ///
-    /// Returns `None` if appending `s` would exceed the capacity (`self.len() + s.len() > N`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut s = StackString::<8>::new();
-    /// assert!(s.try_push_str("hello").is_some());
-    /// assert_eq!(s.as_str(), "hello");
-    ///
-    /// assert!(s.try_push_str("world").is_none());
-    /// assert_eq!(s.as_str(), "hello");
-    ///
-    /// assert!(s.try_push_str("!!!").is_some());
-    /// assert_eq!(s.as_str(), "hello!!!");
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn try_push_str(&mut self, s: &str) -> Option<()> {
-        if self.len + s.len() > N {
-            None
-        } else {
-            unsafe { self.push_str_unchecked(s) };
-            Some(())
+    // insert
+    define_variants! {
+        fn insert(&mut self, index: usize, c: char) -> (),
+
+        normal_brief: "Inserts a `char` at `index`, shifting all elements after it",
+        try_brief: "Attempts to insert a `char` at `index`, shifting all elements after it",
+        unchecked_brief_suffix: "without bound or capacity checking",
+        checks: {
+            index > self.len => "index out of bounds",
+            self.len + c.len_utf8() > N => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: insert_unchecked,
+        try_fn: try_insert,
+        body: {
+            let c_len = c.len_utf8();
+            unsafe {
+                let dst = self.buf.as_mut_ptr().add(index).cast::<u8>();
+                ptr::copy(dst, dst.add(c_len), self.len - index);
+                self.write_char_to_ptr(dst, c, c_len);
+            };
+
+            self.len += c_len;
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push('a');
+                /// s.push('c');
+                /// assert_eq!(s.as_str(), "ac");
+                ///
+                /// s.insert(1, 'b');
+                /// assert_eq!(s.as_str(), "abc");
+                /// assert_eq!(s.len(), 3);
+                ///
+                /// s.insert(3, '7');
+                /// assert_eq!(s.as_str(), "abc7");
+                /// ```
+                ///
+                /// A panic if the index is out of bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push('a');
+                /// s.push('c');
+                /// assert_eq!(s.len(), 2);
+                ///
+                /// // this will panic at runtime
+                /// s.insert(3, 'b');
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<2>::new();
+                /// s.push('a');
+                /// s.push('c');
+                /// assert_eq!(s.len(), 2);
+                ///
+                /// // this will panic at runtime
+                /// s.insert(1, 'b');
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                ///
+                /// s.push_str("abcd");
+                /// assert_eq!(s.as_str(), "abcd");
+                ///
+                /// assert!(s.try_insert(1, 'e').is_some());
+                /// assert_eq!(s.as_str(), "aebcd");
+                ///
+                /// // index out of bounds
+                /// assert!(s.try_insert(10, 'x').is_none());
+                ///
+                /// // would exceed capacity
+                /// s.push_str("!!!");
+                /// assert!(s.try_insert(0, 'x').is_none());
+                /// ```
+            }
+        }
+    }
+
+    // insert_ascii
+    define_variants! {
+        #[cfg(feature = "nightly")]
+        #[cfg_attr(docsrs, doc(cfg(feature = "nightly")))]
+        fn insert_ascii(&mut self, index: usize, ascii: Char) -> (),
+
+        normal_brief: "Inserts an ASCII character at `index`, shifting all elements after it",
+        try_brief: "Attempts to insert an ASCII character at `index`, shifting all elements after it",
+        unchecked_brief_suffix: "without bound or capacity checking",
+        checks: {
+            index > self.len => "index out of bounds",
+            self.is_full() => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: insert_ascii_unchecked,
+        try_fn: try_insert_ascii,
+        body: {
+            unsafe {
+                let dst = self.buf.as_mut_ptr().add(index).cast::<u8>();
+                ptr::copy(dst, dst.add(1), self.len - index);
+                dst.write(ascii as u8);
+            }
+            self.len += 1;
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push_ascii(Char::SmallA);
+                /// s.push_ascii(Char::SmallC);
+                /// assert_eq!(s.as_str(), "ac");
+                ///
+                /// s.insert_ascii(1, Char::SmallB);
+                /// assert_eq!(s.as_str(), "abc");
+                /// ```
+                ///
+                /// A panic if the index is out of bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push_ascii(Char::SmallA);
+                /// assert_eq!(s.len(), 1);
+                ///
+                /// // this will panic at runtime
+                /// s.insert_ascii(2, Char::SmallB);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<1>::new();
+                /// s.push_ascii(Char::SmallA);
+                ///
+                /// // this will panic at runtime
+                /// s.insert_ascii(0, Char::SmallB);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                /// use core::ascii::Char;
+                ///
+                /// let mut s = StackString::<3>::new();
+                /// assert!(s.try_insert_ascii(0, Char::SmallA).is_some());
+                /// assert_eq!(s.as_str(), "a");
+                ///
+                /// assert!(s.try_insert_ascii(1, Char::SmallC).is_some());
+                /// assert_eq!(s.as_str(), "ac");
+                ///
+                /// // index out of bounds
+                /// assert!(s.try_insert_ascii(10, Char::SmallX).is_none());
+                ///
+                /// assert!(s.try_insert_ascii(1, Char::SmallB).is_some());
+                /// assert_eq!(s.as_str(), "abc");
+                ///
+                /// // String is full
+                /// assert!(s.try_insert_ascii(0, Char::SmallX).is_none());
+                /// assert_eq!(s.as_str(), "abc");
+                /// ```
+            }
+        }
+    }
+
+    // insert_str
+    define_variants! {
+        fn insert_str(&mut self, index: usize, s: &str) -> (),
+
+        normal_brief: "Inserts a `&str` at `index`, shifting all elements after it",
+        try_brief: "Attempts to insert a `&str` at `index`, shifting all elements after it",
+        unchecked_brief_suffix: "without bound or capacity checking",
+        checks: {
+            index > self.len => "index out of bounds",
+            self.len + s.len() > N => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: insert_str_unchecked,
+        try_fn: try_insert_str,
+        body: {
+            let bytes = s.as_bytes();
+            unsafe {
+                let dst = self.buf.as_mut_ptr().add(index).cast::<u8>();
+                ptr::copy(dst, dst.add(bytes.len()), self.len - index);
+                ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            }
+            self.len += s.len();
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<16>::new();
+                /// s.push_str("123");
+                /// assert_eq!(s.as_str(), "123");
+                ///
+                /// s.insert_str(1, "ABC");
+                /// assert_eq!(s.as_str(), "1ABC23");
+                ///
+                /// s.insert_str(5, "DEF");
+                /// assert_eq!(s.as_str(), "1ABC2DEF3");
+                /// ```
+                ///
+                /// A panic if the index is out of bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push_str("hello");
+                /// assert_eq!(s.len(), 5);
+                ///
+                /// // this will panic at runtime
+                /// s.insert_str(10, "x");
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<8>::new();
+                /// s.push_str("hello");
+                /// assert_eq!(s.len(), 5);
+                ///
+                /// // this will panic at runtime
+                /// s.insert_str(0, "world");
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackString;
+                ///
+                /// let mut s = StackString::<12>::new();
+                /// s.push_str("hd");
+                /// assert_eq!(s.as_str(), "hd");
+                ///
+                /// assert!(s.try_insert_str(1, "el").is_some());
+                /// assert_eq!(s.as_str(), "held");
+                ///
+                /// assert!(s.try_insert_str(4, " world").is_some());
+                /// assert_eq!(s.as_str(), "held world");
+                ///
+                /// // would exceed capacity
+                /// assert!(s.try_insert_str(0, "xxx").is_none());
+                /// assert_eq!(s.as_str(), "held world");
+                ///
+                /// // index out of bounds
+                /// assert!(s.try_insert_str(20, "x").is_none());
+                /// ```
+            }
         }
     }
 
@@ -1145,457 +1591,404 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         self.data.as_mut_ptr() as *mut T
     }
 
-    /// Appends a value, without bound checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `self.len() < CAP`.
-    #[inline]
-    pub const unsafe fn push_unchecked(&mut self, value: T) {
-        unsafe {
-            self.data
-                .as_mut_ptr()
-                .add(self.len)
-                .write(MaybeUninit::new(value));
-        }
+    // push
+    define_variants! {
+        fn push(&mut self, value: T) -> (),
 
-        self.len += 1;
-    }
+        normal_brief: "Appends a value",
+        try_brief: "Attempts to append a value",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            self.is_full() => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub},
+        },
+        unchecked_fn: push_unchecked,
+        try_fn: try_push,
 
-    /// Appends a value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the vector is full (`self.len() >= CAP`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(2);
-    /// v.push(3);
-    ///
-    /// assert_eq!(v.len(), 3);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 2);
-    /// assert_eq!(v[2], 3);
-    /// ```
-    ///
-    /// A panic upon overflow:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 2>::new();
-    /// v.push(1);
-    /// v.push(2);
-    ///
-    /// // this will panic at runtime
-    /// v.push(3);
-    /// ```
-    #[inline]
-    pub const fn push(&mut self, value: T) {
-        assert!(!self.is_full(), "buffer capacity exceeded");
-        unsafe { self.push_unchecked(value) };
-    }
-
-    /// Attempts to append a value.
-    ///
-    /// Returns `None` if the vector is full (`self.len() >= CAP`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 2>::new();
-    /// assert!(v.try_push(1).is_some());
-    /// assert!(v.try_push(2).is_some());
-    /// assert!(v.try_push(3).is_none());
-    ///
-    /// assert_eq!(v.len(), 2);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 2);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub fn try_push(&mut self, value: T) -> Option<()> {
-        if self.is_full() {
-            None
-        } else {
-            unsafe { self.push_unchecked(value) };
-            Some(())
-        }
-    }
-
-    /// Inserts an element at `index`, shifting all elements after it, without bound or capacity checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `index <= self.len()` and `self.len() < CAP`.
-    #[inline]
-    pub const unsafe fn insert_unchecked(&mut self, index: usize, element: T) {
-        unsafe {
-            let p = self.data.as_mut_ptr().add(index) as *mut T;
-            ptr::copy(p, p.add(1), self.len - index);
-            ptr::write(p, element);
-        }
-        self.len += 1;
-    }
-
-    /// Inserts an element at position `index`, shifting all elements after it.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index > self.len()` or if the vector is full (`self.len() >= CAP`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(3);
-    /// assert_eq!(v.len(), 2);
-    ///
-    /// v.insert(1, 2);
-    /// assert_eq!(v.len(), 3);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 2);
-    /// assert_eq!(v[2], 3);
-    /// ```
-    ///
-    /// A panic if the index is out of bounds:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(40);
-    /// assert_eq!(v.len(), 1);
-    ///
-    /// // this will panic at runtime
-    /// v.insert(2, 10);
-    /// ```
-    ///
-    /// A panic upon overflow:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 2>::new();
-    /// v.push(40);
-    /// v.push(50);
-    /// assert!(v.is_full());
-    ///
-    /// // this will panic at runtime
-    /// v.insert(1, 19);
-    /// ```
-    ///
-    #[inline]
-    pub const fn insert(&mut self, index: usize, element: T) {
-        assert!(index <= self.len, "index out of bounds");
-        assert!(self.len < CAP, "buffer capacity exceeded");
-        unsafe { self.insert_unchecked(index, element) }
-    }
-
-    /// Attempts to insert an element at `index`, shifting all elements after it.
-    ///
-    /// Returns `None` if `index > self.len()` or if the vector is full (`self.len() >= CAP`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 3>::new();
-    /// v.push(10);
-    /// v.push(20);
-    ///
-    /// assert_eq!(v.len(), 2);
-    ///
-    /// // index out of bounds
-    /// assert!(v.try_insert(3, 30).is_none());
-    ///
-    /// assert!(v.try_insert(1, 30).is_some());
-    /// assert_eq!(v.len(), 3);
-    ///
-    /// // Vector is full
-    /// assert!(v.try_insert(3, 10).is_none());
-    /// ```
-    #[inline]
-    pub fn try_insert(&mut self, index: usize, element: T) -> Option<()> {
-        if index > self.len || self.len >= CAP {
-            None
-        } else {
-            unsafe { self.insert_unchecked(index, element) };
-            Some(())
-        }
-    }
-
-    /// Removes and returns the element at `index`, without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `index < self.len()`.
-    #[inline]
-    pub const unsafe fn remove_unchecked(&mut self, index: usize) -> T {
-        unsafe {
-            let p = self.data.as_mut_ptr().add(index) as *mut T;
-            let result = ptr::read(p);
-            ptr::copy(p.add(1), p, self.len - index - 1);
-            self.len -= 1;
-            result
-        }
-    }
-
-    /// Removes and returns the element at `index`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index >= self.len()`.
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(2);
-    /// v.push(3);
-    ///
-    /// let removed = v.remove(1);
-    /// assert_eq!(removed, 2);
-    /// assert_eq!(v.len(), 2);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 3);
-    /// ```
-    ///
-    /// A panic if the index is out of bounds:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    ///
-    /// // this will panic at runtime
-    /// v.remove(1);
-    /// ```
-    #[inline]
-    pub const fn remove(&mut self, index: usize) -> T {
-        self.try_remove(index).expect("index out of bounds")
-    }
-
-    /// Attempts to remove and return the element at `index`.
-    ///
-    /// Returns `None` if `index >= self.len()`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(10);
-    ///
-    /// assert_eq!(v.try_remove(0), Some(10));
-    /// assert_eq!(v.try_remove(0), None);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn try_remove(&mut self, index: usize) -> Option<T> {
-        if index >= self.len {
-            None
-        } else {
-            Some(unsafe { self.remove_unchecked(index) })
-        }
-    }
-
-    /// Removes and returns the last element, without bound checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `self.len() > 0`.
-    #[inline]
-    pub const unsafe fn pop_unchecked(&mut self) -> T {
-        self.len -= 1;
-        unsafe { self.data.as_ptr().add(self.len).cast::<T>().read() }
-    }
-
-    /// Removes and returns the last element.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the vector is empty (`self.len() == 0`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(2);
-    /// v.push(3);
-    ///
-    /// assert_eq!(v.pop(), 3);
-    /// assert_eq!(v.len(), 2);
-    /// assert_eq!(v.pop(), 2);
-    /// assert_eq!(v.pop(), 1);
-    /// assert!(v.is_empty());
-    /// ```
-    ///
-    /// A panic if the vector is empty:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    ///
-    /// // this will panic at runtime
-    /// v.pop();
-    /// ```
-    #[inline]
-    pub const fn pop(&mut self) -> T {
-        self.try_pop().expect("vector is empty")
-    }
-
-    /// Attempts to remove and return the last element.
-    ///
-    /// Returns `None` if the vector is empty (`self.len() == 0`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// assert_eq!(v.try_pop(), None);
-    ///
-    /// v.push(42);
-    /// assert_eq!(v.try_pop(), Some(42));
-    /// assert_eq!(v.try_pop(), None);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn try_pop(&mut self) -> Option<T> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(unsafe { self.pop_unchecked() })
-        }
-    }
-
-    /// Removes and returns the last element without shifting, without bound checking.
-    /// Replaces it with the last element (swap remove).
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `index < self.len()`.
-    #[inline]
-    pub const unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
-        unsafe {
-            let p = self.data.as_mut_ptr().add(index) as *mut T;
-            let result = ptr::read(p);
-            self.len -= 1;
-            if index != self.len {
-                let last = self.data.as_ptr().add(self.len).cast::<T>().read();
-                ptr::write(p, last);
+        body: {
+            unsafe {
+                self.data
+                    .as_mut_ptr()
+                    .add(self.len)
+                    .write(MaybeUninit::new(value));
             }
-            result
+            self.len += 1;
+        },
+
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                /// v.push(2);
+                /// v.push(3);
+                ///
+                /// assert_eq!(v.len(), 3);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 2);
+                /// assert_eq!(v[2], 3);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 2>::new();
+                /// v.push(1);
+                /// v.push(2);
+                ///
+                /// // this will panic at runtime
+                /// v.push(3);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 2>::new();
+                /// assert!(v.try_push(1).is_some());
+                /// assert!(v.try_push(2).is_some());
+                /// assert!(v.try_push(3).is_none());
+                ///
+                /// assert_eq!(v.len(), 2);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 2);
+                /// ```
+            }
         }
     }
 
-    /// Removes and returns the last element without shifting.
-    /// Replaces it with the last element (swap remove).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index >= self.len()`.
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(2);
-    /// v.push(3);
-    /// v.push(4);
-    ///
-    /// // Remove middle element
-    /// let removed = v.swap_remove(1);
-    /// assert_eq!(removed, 2);
-    /// assert_eq!(v.len(), 3);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 4);
-    /// assert_eq!(v[2], 3);
-    ///
-    /// // Remove last element
-    /// let removed_last = v.swap_remove(2);
-    /// assert_eq!(removed_last, 3);
-    /// assert_eq!(v.len(), 2);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 4);
-    /// ```
-    ///
-    /// A panic if the index is out of bounds:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 4>::new();
-    /// v.push(10);
-    ///
-    /// // this will panic at runtime
-    /// v.swap_remove(1);
-    /// ```
-    #[inline]
-    pub const fn swap_remove(&mut self, index: usize) -> T {
-        self.try_swap_remove(index).expect("index out of bounds")
+    // insert
+    define_variants! {
+        fn insert(&mut self, index: usize, element: T) -> (),
+
+        normal_brief: "Inserts an element at position `index`, shifting all elements after it",
+        try_brief: "Attempts to insert an element at `index`, shifting all elements after it",
+        unchecked_brief_suffix: "without bound or capacity checking",
+        checks: {
+            index > self.len() => "index out of bounds",
+            self.is_full() => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub},
+        },
+
+        unchecked_fn: insert_unchecked,
+        try_fn: try_insert,
+
+        body: {
+            unsafe {
+                let p = self.data.as_mut_ptr().add(index) as *mut T;
+                ptr::copy(p, p.add(1), self.len - index);
+                ptr::write(p, element);
+            }
+            self.len += 1;
+        },
+
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                /// v.push(3);
+                /// assert_eq!(v.len(), 2);
+                ///
+                /// v.insert(1, 2);
+                /// assert_eq!(v.len(), 3);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 2);
+                /// assert_eq!(v[2], 3);
+                /// ```
+                ///
+                /// A panic if the index is out of bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(40);
+                /// assert_eq!(v.len(), 1);
+                ///
+                /// // this will panic at runtime
+                /// v.insert(2, 10);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 2>::new();
+                /// v.push(40);
+                /// v.push(50);
+                /// assert!(v.is_full());
+                ///
+                /// // this will panic at runtime
+                /// v.insert(1, 19);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 3>::new();
+                /// v.push(10);
+                /// v.push(20);
+                ///
+                /// assert_eq!(v.len(), 2);
+                ///
+                /// // index out of bounds
+                /// assert!(v.try_insert(3, 30).is_none());
+                ///
+                /// assert!(v.try_insert(1, 30).is_some());
+                /// assert_eq!(v.len(), 3);
+                ///
+                /// // vector is full
+                /// assert!(v.try_insert(3, 10).is_none());
+                /// ```
+            }
+        }
     }
 
-    /// Attempts to remove and return the last element without shifting.
-    /// Replaces it with the last element (swap remove).
-    ///
-    /// Returns `None` if `index >= self.len()`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.extend_from_slice(&[1, 2, 3]);
-    ///
-    /// assert_eq!(v.try_swap_remove(1), Some(2));
-    /// assert_eq!(v.as_slice(), &[1, 3]);
-    ///
-    /// assert_eq!(v.try_swap_remove(10), None);
-    /// ```
-    #[inline]
-    pub const fn try_swap_remove(&mut self, index: usize) -> Option<T> {
-        if index >= self.len {
-            None
-        } else {
-            Some(unsafe { self.swap_remove_unchecked(index) })
+    // remove
+    define_variants! {
+        fn remove(&mut self, index: usize) -> T,
+
+        normal_brief: "Removes and returns the element at `index`",
+        try_brief: "Attempts to remove and return the element at `index`",
+        unchecked_brief_suffix: "without bounds checking",
+        checks: {
+            index >= self.len() => "index out of bounds",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: remove_unchecked,
+        try_fn: try_remove,
+
+        body: {
+            unsafe {
+                let p = self.data.as_mut_ptr().add(index) as *mut T;
+                let result = ptr::read(p);
+                ptr::copy(p.add(1), p, self.len - index - 1);
+                self.len -= 1;
+                result
+            }
+        },
+
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                /// v.push(2);
+                /// v.push(3);
+                ///
+                /// let removed = v.remove(1);
+                /// assert_eq!(removed, 2);
+                /// assert_eq!(v.len(), 2);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 3);
+                /// ```
+                ///
+                /// A panic if the index is out of bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                ///
+                /// // this will panic at runtime
+                /// v.remove(1);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(10);
+                ///
+                /// assert_eq!(v.try_remove(0), Some(10));
+                /// assert_eq!(v.try_remove(0), None);
+                /// ```
+            }
+        }
+    }
+
+    // pop
+    define_variants! {
+        fn pop(&mut self) -> T,
+
+        normal_brief: "Removes and returns the last element",
+        try_brief: "Attempts to remove and return the last element",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            self.is_empty() => "vector is empty",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: pop_unchecked,
+        try_fn: try_pop,
+        body: {
+            self.len -= 1;
+            unsafe { self.data.as_ptr().add(self.len).cast::<T>().read() }
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                /// v.push(2);
+                /// v.push(3);
+                ///
+                /// assert_eq!(v.pop(), 3);
+                /// assert_eq!(v.len(), 2);
+                /// assert_eq!(v.pop(), 2);
+                /// assert_eq!(v.pop(), 1);
+                /// assert!(v.is_empty());
+                /// ```
+                ///
+                /// A panic if the vector is empty:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                ///
+                /// // this will panic at runtime
+                /// v.pop();
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// assert_eq!(v.try_pop(), None);
+                ///
+                /// v.push(42);
+                /// assert_eq!(v.try_pop(), Some(42));
+                /// assert_eq!(v.try_pop(), None);
+                /// ```
+            }
+        }
+    }
+
+    // swap_remove
+    define_variants! {
+        fn swap_remove(&mut self, index: usize) -> T,
+
+        normal_brief: "Removes and returns the element at `index` without shifting, replacing it with the last element (swap remove)",
+        try_brief: "Attempts to remove and return the element at `index` without shifting, replacing it with the last element (swap remove)",
+        unchecked_brief_suffix: "without bound checking",
+        checks: {
+            index >= self.len() => "index out of bounds",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: swap_remove_unchecked,
+        try_fn: try_swap_remove,
+
+        body: {
+            unsafe {
+                let p = self.data.as_mut_ptr().add(index) as *mut T;
+                let result = ptr::read(p);
+                self.len -= 1;
+                if index != self.len {
+                    let last = self.data.as_ptr().add(self.len).cast::<T>().read();
+                    ptr::write(p, last);
+                }
+                result
+            }
+        },
+
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                /// v.push(2);
+                /// v.push(3);
+                /// v.push(4);
+                ///
+                /// // remove middle element
+                /// let removed = v.swap_remove(1);
+                /// assert_eq!(removed, 2);
+                /// assert_eq!(v.len(), 3);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 4);
+                /// assert_eq!(v[2], 3);
+                ///
+                /// // remove last element
+                /// let removed_last = v.swap_remove(2);
+                /// assert_eq!(removed_last, 3);
+                /// assert_eq!(v.len(), 2);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 4);
+                /// ```
+                ///
+                /// A panic if the index is out of bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 4>::new();
+                /// v.push(10);
+                ///
+                /// // this will panic at runtime
+                /// v.swap_remove(1);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.extend_from_slice(&[1, 2, 3]);
+                ///
+                /// assert_eq!(v.try_swap_remove(1), Some(2));
+                /// assert_eq!(v.as_slice(), &[1, 3]);
+                ///
+                /// assert_eq!(v.try_swap_remove(10), None);
+                /// ```
+            }
         }
     }
 
@@ -1800,6 +2193,170 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         }
     }
 
+    /// Returns the contents as a slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut v = StackVec::<i32, 8>::new();
+    /// v.extend_from_slice(&[1, 2, 3]);
+    /// assert_eq!(v.as_slice(), &[1, 2, 3]);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_slice(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(self.data.as_ptr() as *const T, self.len) }
+    }
+
+    /// Returns the contents as a mutable slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut v = StackVec::<i32, 8>::new();
+    /// v.extend_from_slice(&[1, 2, 3]);
+    /// let slice = v.as_mut_slice();
+    /// slice[1] = 42;
+    /// assert_eq!(v[1], 42);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut T, self.len) }
+    }
+
+    /// Returns an iterator over the slice.
+    ///
+    /// The iterator yields all items from start to end.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;;
+    ///
+    ///  let mut v = StackVec::<i32, 8>::new();
+    /// v.push(1);
+    /// v.push(2);
+    /// v.push(3);
+    ///
+    /// let sum: i32 = v.iter().sum();
+    /// assert_eq!(sum, 6);
+    /// ```
+    #[inline]
+    pub fn iter(&self) -> slice::Iter<'_, T> {
+        self.as_slice().iter()
+    }
+
+    /// Returns an iterator that allows modifying each value.
+    ///
+    /// The iterator yields all items from start to end.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;;
+    ///
+    ///  let mut v = StackVec::<i32, 8>::new();
+    /// v.push(1);
+    /// v.push(2);
+    /// v.push(3);
+    ///
+    /// for x in v.iter_mut() {
+    ///     *x *= 2;
+    /// }
+    /// assert_eq!(v[0], 2);
+    /// assert_eq!(v[1], 4);
+    /// assert_eq!(v[2], 6);
+    /// ```
+    #[inline]
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
+        self.as_mut_slice().iter_mut()
+    }
+
+    define_variants! {
+        fn extend_from_slice(&mut self, slice: &[T]) -> (),
+        where_clause: { T: Clone }
+
+        normal_brief: "Extends the vector from a slice",
+        try_brief: "Attempts to extend the vector from a slice",
+        unchecked_brief_suffix: "without capacity checking",
+        checks: {
+            self.len() + slice.len() > CAP => "buffer capacity exceeded",
+        },
+        prefixes: {
+            normal: {pub},
+            unchecked: {pub},
+            try: {pub},
+        },
+        unchecked_fn: extend_from_slice_unchecked,
+        try_fn: try_extend_from_slice,
+
+        body: {
+            if size_of::<T>() == 0 || mem::needs_drop::<T>() {
+                for item in slice {
+                    unsafe {
+                        self.push_unchecked(item.clone());
+                    }
+                }
+            } else {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        slice.as_ptr(),
+                        self.data.as_mut_ptr().cast::<T>().add(self.len),
+                        slice.len(),
+                    );
+                }
+                self.len += slice.len();
+            }
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 8>::new();
+                /// v.push(1);
+                /// v.extend_from_slice(&[2, 3, 4]);
+                ///
+                /// assert_eq!(v.len(), 4);
+                /// assert_eq!(v[0], 1);
+                /// assert_eq!(v[1], 2);
+                /// assert_eq!(v[2], 3);
+                /// assert_eq!(v[3], 4);
+                /// ```
+                ///
+                /// A panic upon overflow:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 4>::new();
+                /// v.extend_from_slice(&[1, 2, 3, 4, 5]);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut v = StackVec::<i32, 4>::new();
+                /// v.push(1);
+                ///
+                /// assert!(v.try_extend_from_slice(&[2, 3]).is_some());
+                /// assert_eq!(v.len(), 3);
+                ///
+                /// assert!(v.try_extend_from_slice(&[4, 5]).is_none());
+                /// assert_eq!(v.len(), 3);
+                /// ```
+            }
+        }
+    }
+
     /// Drops all initialized elements in the vector without resetting `self.len`.
     #[inline]
     fn drop_elements(&mut self, start: usize) {
@@ -1961,193 +2518,6 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     #[inline]
     pub const fn is_full(&self) -> bool {
         self.len >= CAP
-    }
-
-    /// Returns the contents as a slice.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.extend_from_slice(&[1, 2, 3]);
-    /// assert_eq!(v.as_slice(), &[1, 2, 3]);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_slice(&self) -> &[T] {
-        unsafe { slice::from_raw_parts(self.data.as_ptr() as *const T, self.len) }
-    }
-
-    /// Returns the contents as a mutable slice.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.extend_from_slice(&[1, 2, 3]);
-    /// let slice = v.as_mut_slice();
-    /// slice[1] = 42;
-    /// assert_eq!(v[1], 42);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut T, self.len) }
-    }
-
-    /// Returns an iterator over the slice.
-    ///
-    /// The iterator yields all items from start to end.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;;
-    ///
-    ///  let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(2);
-    /// v.push(3);
-    ///
-    /// let sum: i32 = v.iter().sum();
-    /// assert_eq!(sum, 6);
-    /// ```
-    #[inline]
-    pub fn iter(&self) -> slice::Iter<'_, T> {
-        self.as_slice().iter()
-    }
-
-    /// Returns an iterator that allows modifying each value.
-    ///
-    /// The iterator yields all items from start to end.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;;
-    ///
-    ///  let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.push(2);
-    /// v.push(3);
-    ///
-    /// for x in v.iter_mut() {
-    ///     *x *= 2;
-    /// }
-    /// assert_eq!(v[0], 2);
-    /// assert_eq!(v[1], 4);
-    /// assert_eq!(v[2], 6);
-    /// ```
-    #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
-        self.as_mut_slice().iter_mut()
-    }
-
-    /// Extends the vector from a slice, without capacity checking.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `self.len() + slice.len() <= CAP`.
-    #[inline]
-    pub unsafe fn extend_from_slice_unchecked(&mut self, slice: &[T])
-    where
-        T: Clone,
-    {
-        if size_of::<T>() == 0 || mem::needs_drop::<T>() {
-            for item in slice {
-                unsafe {
-                    self.push_unchecked(item.clone());
-                }
-            }
-        } else {
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    slice.as_ptr(),
-                    (self.data.as_mut_ptr() as *mut T).add(self.len),
-                    slice.len(),
-                );
-            }
-            self.len += slice.len();
-        }
-    }
-
-    /// Extends the vector from a slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if extending would exceed the capacity (`self.len() + slice.len() > CAP`).
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 8>::new();
-    /// v.push(1);
-    /// v.extend_from_slice(&[2, 3, 4]);
-    ///
-    /// assert_eq!(v.len(), 4);
-    /// assert_eq!(v[0], 1);
-    /// assert_eq!(v[1], 2);
-    /// assert_eq!(v[2], 3);
-    /// assert_eq!(v[3], 4);
-    /// ```
-    ///
-    /// A panic upon overflow:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 4>::new();
-    ///
-    /// // this will panic at runtime
-    /// v.extend_from_slice(&[1, 2, 3, 4, 5]);
-    /// ```
-    #[inline]
-    pub fn extend_from_slice(&mut self, slice: &[T])
-    where
-        T: Clone,
-    {
-        self.try_extend_from_slice(slice)
-            .expect("buffer capacity exceeded");
-    }
-
-    /// Attempts to extend the vector from a slice.
-    ///
-    /// Returns `None` if extending would exceed the capacity (`self.len() + slice.len() > CAP`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut v = StackVec::<i32, 4>::new();
-    /// v.push(1);
-    ///
-    /// assert!(v.try_extend_from_slice(&[2, 3]).is_some());
-    /// assert_eq!(v.len(), 3);
-    ///
-    /// assert!(v.try_extend_from_slice(&[4, 5]).is_none());
-    /// assert_eq!(v.len(), 3);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub fn try_extend_from_slice(&mut self, slice: &[T]) -> Option<()>
-    where
-        T: Clone,
-    {
-        if self.len + slice.len() > CAP {
-            None
-        } else {
-            unsafe { self.extend_from_slice_unchecked(slice) };
-            Some(())
-        }
     }
 }
 
@@ -2513,7 +2883,7 @@ impl<T: Hash, const CAP: usize> Hash for StackVec<T, CAP> {
     /// use stack_collections::StackVec;
     /// use core::hash::{Hash, Hasher};
     ///
-    /// // Simple no_std hasher
+    /// // simple no_std hasher
     /// struct MyTestHasher {
     ///     hash: u64,
     /// }
