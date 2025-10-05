@@ -499,7 +499,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         try_brief: "Attempts to return a reference to the element at `index`",
         unchecked_brief_suffix: "without bounds checking",
         ub_conditions: {
-            index >= self.len => "index out of bounds",
+            index >= self.len() => "index out of bounds",
         },
         prefixes: {
             normal: {pub const},
@@ -565,7 +565,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         try_brief: "Attempts to return a mutable reference to the element at `index`",
         unchecked_brief_suffix: "without bounds checking",
         ub_conditions: {
-            index >= self.len => "index out of bounds",
+            index >= self.len() => "index out of bounds",
         },
         prefixes: {
             normal: {pub const},
