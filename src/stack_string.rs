@@ -793,7 +793,7 @@ impl<const N: usize> StackString<N> {
         try_brief: "Attempts to append a `str`",
         unchecked_brief_suffix: "without bound checking",
         ub_conditions: {
-            self.len + string.len() > N => "buffer capacity exceeded",
+            self.len() + string.len() > N => "buffer capacity exceeded",
         },
         prefixes: {
             normal: {pub const},
@@ -870,8 +870,8 @@ impl<const N: usize> StackString<N> {
         try_brief: "Attempts to insert a `char` at `index`, shifting all elements after it",
         unchecked_brief_suffix: "without bound or capacity checking",
         ub_conditions: {
-            index > self.len => "index out of bounds",
-            self.len + value.len_utf8() > N => "buffer capacity exceeded",
+            index > self.len() => "index out of bounds",
+            self.len() + value.len_utf8() > N => "buffer capacity exceeded",
         },
         prefixes: {
             normal: {pub const},
@@ -978,7 +978,7 @@ impl<const N: usize> StackString<N> {
         try_brief: "Attempts to insert an ASCII character at `index`, shifting all elements after it",
         unchecked_brief_suffix: "without bound or capacity checking",
         ub_conditions: {
-            index > self.len => "index out of bounds",
+            index > self.len() => "index out of bounds",
             self.is_full() => "buffer capacity exceeded",
         },
         prefixes: {
@@ -1093,8 +1093,8 @@ impl<const N: usize> StackString<N> {
         try_brief: "Attempts to insert a `str` at `index`, shifting all elements after it",
         unchecked_brief_suffix: "without bound or capacity checking",
         ub_conditions: {
-            index > self.len => "index out of bounds",
-            self.len + string.len() > N => "buffer capacity exceeded",
+            index > self.len() => "index out of bounds",
+            self.len() + string.len() > N => "buffer capacity exceeded",
         },
         prefixes: {
             normal: {pub const},
