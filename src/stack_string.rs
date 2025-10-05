@@ -485,7 +485,7 @@ impl<const N: usize> StackString<N> {
 
     // pop
     define_variants! {
-        fn pop(self : &mut Self) -> char,
+        fn pop(self: &mut Self) -> char,
 
         normal_brief: "Removes and returns the last char",
         try_brief: "Attempts to remove and return the last char",
