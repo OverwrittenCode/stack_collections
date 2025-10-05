@@ -42,7 +42,7 @@ mod internal {
     macro_rules! define_variants {
     (
         $(#[$meta:meta])*
-        fn $name:ident($self:ident : $self_ty:ty $(, $param:ident: $param_ty:ty)*) $(-> $ret:ty)?,
+        fn $name:ident($self:ident: $self_ty:ty $(, $param:ident: $param_ty:ty)*) $(-> $ret:ty)?,
         $(where_clause: { $($where_clause:tt)* } )?
 
         normal_brief: $normal_brief:literal,
