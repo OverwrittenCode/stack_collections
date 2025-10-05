@@ -48,6 +48,123 @@ impl<const N: usize> StackString<N> {
         empty_collection!()
     }
 
+    /// Clears the string by setting `len = 0`.
+    ///
+    /// The underlying memory is not zeroed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<8>::new();
+    /// stack_string.push_str("hello");
+    /// assert!(!stack_string.is_empty());
+    ///
+    /// stack_string.clear();
+    /// assert!(stack_string.is_empty());
+    /// assert_eq!(stack_string.len(), 0);
+    /// assert_eq!(stack_string.as_str(), "");
+    /// ```
+    #[inline]
+    pub const fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Returns the current length in bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<16>::new();
+    /// assert_eq!(stack_string.len(), 0);
+    /// stack_string.push_str("hello");
+    /// assert_eq!(stack_string.len(), 5);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns the capacity in bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let stack_string = StackString::<32>::new();
+    /// assert_eq!(stack_string.capacity(), 32);
+    /// ```
+    #[expect(clippy::inline_always, reason = "this method is trivial")]
+    #[inline(always)]
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+
+    /// Returns the remaining capacity in bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<10>::new();
+    /// assert_eq!(stack_string.remaining_capacity(), 10);
+    ///
+    /// stack_string.push_str("hello");
+    /// assert_eq!(stack_string.remaining_capacity(), 5);
+    ///
+    /// stack_string.push_str("world");
+    /// assert_eq!(stack_string.remaining_capacity(), 0);
+    /// assert!(stack_string.is_full());
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn remaining_capacity(&self) -> usize {
+        N - self.len
+    }
+
+    /// Returns `true` if the string is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<8>::new();
+    /// assert!(stack_string.is_empty());
+    /// stack_string.push('a');
+    /// assert!(!stack_string.is_empty());
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns `true` if the string is at full capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<5>::new();
+    /// assert!(!stack_string.is_full());
+    /// stack_string.push_str("hello");
+    /// assert!(stack_string.is_full());
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn is_full(&self) -> bool {
+        self.len >= N
+    }
+
     /// Returns a raw pointer to the string's buffer.
     ///
     /// # Examples
@@ -184,7 +301,189 @@ impl<const N: usize> StackString<N> {
 
         self.len = new_len;
     }
+    /// Returns the contents as a slice of initialized bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<8>::new();
+    /// stack_string.push_str("hello");
+    /// assert_eq!(stack_string.as_bytes(), b"hello");
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_bytes(&self) -> &[u8] {
+        // SAFETY: self.len bytes starting from buf are initialized valid UTF-8
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
 
+    /// Borrow the content as `str`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<8>::new();
+    /// stack_string.push_str("test");
+    /// assert_eq!(stack_string.as_str(), "test");
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_str(&self) -> &str {
+        // SAFETY: self.as_bytes() returns valid UTF-8 by construction
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
+    }
+    /// Borrow the content as a mutable `str`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<16>::new();
+    /// stack_string.push_str("hello");
+    ///
+    /// let mutable_str = stack_string.as_mut_str();
+    /// mutable_str.make_ascii_uppercase();
+    ///
+    /// assert_eq!(stack_string.as_str(), "HELLO");
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_mut_str(&mut self) -> &mut str {
+        // SAFETY: Creating mutable slice of initialized valid UTF-8 bytes
+        let slice = unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) };
+        // SAFETY: slice contains valid UTF-8 by construction
+        unsafe { str::from_utf8_unchecked_mut(slice) }
+    }
+
+    /// Truncates the string to the specified byte length.
+    ///
+    /// # Panics
+    ///
+    /// A panic if `new_len` does not lie on a UTF-8 character boundary.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<16>::new();
+    /// stack_string.push_str("hello");
+    /// stack_string.truncate(3);
+    /// assert_eq!(stack_string.as_str(), "hel");
+    /// assert_eq!(stack_string.len(), 3);
+    ///
+    /// stack_string.truncate(10);
+    /// assert_eq!(stack_string.as_str(), "hel");
+    /// ```
+    ///
+    /// A panic upon invalid UTF-8 character boundary:
+    ///
+    /// ```should_panic
+    /// use stack_collections::StackString;
+    ///
+    /// let mut stack_string = StackString::<16>::new();
+    /// stack_string.push_str("hello😀");
+    ///
+    /// // this will panic at runtime
+    /// stack_string.truncate(6);
+    /// ```
+    #[inline]
+    pub const fn truncate(&mut self, new_len: usize) {
+        if new_len >= self.len {
+            return;
+        }
+        assert!(self.as_str().is_char_boundary(new_len), "truncate not on char boundary");
+        self.len = new_len;
+    }
+
+    /// Writes `value` to `dst`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Casting from u32 to u8 is safe here because UTF-8 encoding ensures all written byte values are <= 0xFF"
+    )]
+    #[inline(always)]
+    const unsafe fn write_char_to_ptr(dst: *mut u8, value: char, value_len: usize) {
+        const TAG_CONT: u8 = 0b1000_0000;
+        const TAG_TWO_B: u8 = 0b1100_0000;
+        const TAG_THREE_B: u8 = 0b1110_0000;
+        const TAG_FOUR_B: u8 = 0b1111_0000;
+
+        const CONT_MASK: u32 = 0x3F;
+
+        let code = value as u32;
+
+        match value_len {
+            1 => {
+                // SAFETY: Caller ensures dst has space for 1 byte
+                unsafe {
+                    dst.write(code as u8);
+                }
+            }
+            2 => {
+                // SAFETY: Caller ensures dst has space for byte 0
+                unsafe {
+                    dst.write(TAG_TWO_B | ((code >> 6_u32) as u8));
+                }
+                // SAFETY: Caller ensures dst has space for byte 1
+                let dst1 = unsafe { dst.add(1) };
+                // SAFETY: Writing to valid pointer dst1
+                unsafe {
+                    dst1.write(TAG_CONT | ((code & CONT_MASK) as u8));
+                }
+            }
+            3 => {
+                // SAFETY: Caller ensures dst has space for byte 0
+                unsafe {
+                    dst.write(TAG_THREE_B | ((code >> 12_u32) as u8));
+                }
+                // SAFETY: Caller ensures dst has space for byte 1
+                let dst1 = unsafe { dst.add(1) };
+                // SAFETY: Writing to valid pointer dst1
+                unsafe {
+                    dst1.write(TAG_CONT | (((code >> 6_u32) & CONT_MASK) as u8));
+                }
+                // SAFETY: Caller ensures dst has space for byte 2
+                let dst2 = unsafe { dst.add(2) };
+                // SAFETY: Writing to valid pointer dst2
+                unsafe {
+                    dst2.write(TAG_CONT | ((code & CONT_MASK) as u8));
+                }
+            }
+            _ => {
+                // SAFETY: Caller ensures dst has space for byte 0
+                unsafe {
+                    dst.write(TAG_FOUR_B | ((code >> 18_u32) as u8));
+                }
+                // SAFETY: Caller ensures dst has space for byte 1
+                let dst1 = unsafe { dst.add(1) };
+                // SAFETY: Writing to valid pointer dst1
+                unsafe {
+                    dst1.write(TAG_CONT | (((code >> 12_u32) & CONT_MASK) as u8));
+                }
+                // SAFETY: Caller ensures dst has space for byte 2
+                let dst2 = unsafe { dst.add(2) };
+                // SAFETY: Writing to valid pointer dst2
+                unsafe {
+                    dst2.write(TAG_CONT | (((code >> 6_u32) & CONT_MASK) as u8));
+                }
+                // SAFETY: Caller ensures dst has space for byte 3
+                let dst3 = unsafe { dst.add(3) };
+                // SAFETY: Writing to valid pointer dst3
+                unsafe {
+                    dst3.write(TAG_CONT | ((code & CONT_MASK) as u8));
+                }
+            }
+        }
+    }
+
+    // pop
     define_variants! {
         fn pop(self : &mut Self) -> char,
 
@@ -332,85 +631,6 @@ impl<const N: usize> StackString<N> {
         }
     }
 
-    /// Writes `value` to `dst`
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Casting from u32 to u8 is safe here because UTF-8 encoding ensures all written byte values are <= 0xFF"
-    )]
-    #[inline(always)]
-    const unsafe fn write_char_to_ptr(dst: *mut u8, value: char, value_len: usize) {
-        const TAG_CONT: u8 = 0b1000_0000;
-        const TAG_TWO_B: u8 = 0b1100_0000;
-        const TAG_THREE_B: u8 = 0b1110_0000;
-        const TAG_FOUR_B: u8 = 0b1111_0000;
-
-        const CONT_MASK: u32 = 0x3F;
-
-        let code = value as u32;
-
-        match value_len {
-            1 => {
-                // SAFETY: Caller ensures dst has space for 1 byte
-                unsafe {
-                    dst.write(code as u8);
-                }
-            }
-            2 => {
-                // SAFETY: Caller ensures dst has space for byte 0
-                unsafe {
-                    dst.write(TAG_TWO_B | ((code >> 6_u32) as u8));
-                }
-                // SAFETY: Caller ensures dst has space for byte 1
-                let dst1 = unsafe { dst.add(1) };
-                // SAFETY: Writing to valid pointer dst1
-                unsafe {
-                    dst1.write(TAG_CONT | ((code & CONT_MASK) as u8));
-                }
-            }
-            3 => {
-                // SAFETY: Caller ensures dst has space for byte 0
-                unsafe {
-                    dst.write(TAG_THREE_B | ((code >> 12_u32) as u8));
-                }
-                // SAFETY: Caller ensures dst has space for byte 1
-                let dst1 = unsafe { dst.add(1) };
-                // SAFETY: Writing to valid pointer dst1
-                unsafe {
-                    dst1.write(TAG_CONT | (((code >> 6_u32) & CONT_MASK) as u8));
-                }
-                // SAFETY: Caller ensures dst has space for byte 2
-                let dst2 = unsafe { dst.add(2) };
-                // SAFETY: Writing to valid pointer dst2
-                unsafe {
-                    dst2.write(TAG_CONT | ((code & CONT_MASK) as u8));
-                }
-            }
-            _ => {
-                // SAFETY: Caller ensures dst has space for byte 0
-                unsafe {
-                    dst.write(TAG_FOUR_B | ((code >> 18_u32) as u8));
-                }
-                // SAFETY: Caller ensures dst has space for byte 1
-                let dst1 = unsafe { dst.add(1) };
-                // SAFETY: Writing to valid pointer dst1
-                unsafe {
-                    dst1.write(TAG_CONT | (((code >> 12_u32) & CONT_MASK) as u8));
-                }
-                // SAFETY: Caller ensures dst has space for byte 2
-                let dst2 = unsafe { dst.add(2) };
-                // SAFETY: Writing to valid pointer dst2
-                unsafe {
-                    dst2.write(TAG_CONT | (((code >> 6_u32) & CONT_MASK) as u8));
-                }
-                // SAFETY: Caller ensures dst has space for byte 3
-                let dst3 = unsafe { dst.add(3) };
-                // SAFETY: Writing to valid pointer dst3
-                unsafe {
-                    dst3.write(TAG_CONT | ((code & CONT_MASK) as u8));
-                }
-            }
-        }
-    }
     // push
     define_variants! {
         fn push(self: &mut Self, value: char) -> (),
@@ -566,8 +786,7 @@ impl<const N: usize> StackString<N> {
     }
 
     // push_str
-    #[rustfmt::skip]
-    define_variants!(
+    define_variants! {
         fn push_str(self: &mut Self, string: &str) -> (),
 
         normal_brief: "Appends a `str`",
@@ -641,7 +860,7 @@ impl<const N: usize> StackString<N> {
                 /// ```
             }
         }
-    );
+    }
 
     // insert
     define_variants! {
@@ -969,225 +1188,6 @@ impl<const N: usize> StackString<N> {
                 /// ```
             }
         }
-    }
-
-    /// Truncates the string to the specified byte length.
-    ///
-    /// # Panics
-    ///
-    /// A panic if `new_len` does not lie on a UTF-8 character boundary.
-    ///
-    /// # Examples
-    ///
-    /// Basic usage:
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<16>::new();
-    /// stack_string.push_str("hello");
-    /// stack_string.truncate(3);
-    /// assert_eq!(stack_string.as_str(), "hel");
-    /// assert_eq!(stack_string.len(), 3);
-    ///
-    /// stack_string.truncate(10);
-    /// assert_eq!(stack_string.as_str(), "hel");
-    /// ```
-    ///
-    /// A panic upon invalid UTF-8 character boundary:
-    ///
-    /// ```should_panic
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<16>::new();
-    /// stack_string.push_str("hello😀");
-    ///
-    /// // this will panic at runtime
-    /// stack_string.truncate(6);
-    /// ```
-    #[inline]
-    pub const fn truncate(&mut self, new_len: usize) {
-        if new_len >= self.len {
-            return;
-        }
-        assert!(self.as_str().is_char_boundary(new_len), "truncate not on char boundary");
-        self.len = new_len;
-    }
-
-    /// Returns the contents as a slice of initialized bytes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<8>::new();
-    /// stack_string.push_str("hello");
-    /// assert_eq!(stack_string.as_bytes(), b"hello");
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_bytes(&self) -> &[u8] {
-        // SAFETY: self.len bytes starting from buf are initialized valid UTF-8
-        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
-    }
-
-    /// Borrow the content as `str`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<8>::new();
-    /// stack_string.push_str("test");
-    /// assert_eq!(stack_string.as_str(), "test");
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_str(&self) -> &str {
-        // SAFETY: self.as_bytes() returns valid UTF-8 by construction
-        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
-    }
-    /// Borrow the content as a mutable `str`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<16>::new();
-    /// stack_string.push_str("hello");
-    ///
-    /// let mutable_str = stack_string.as_mut_str();
-    /// mutable_str.make_ascii_uppercase();
-    ///
-    /// assert_eq!(stack_string.as_str(), "HELLO");
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_mut_str(&mut self) -> &mut str {
-        // SAFETY: Creating mutable slice of initialized valid UTF-8 bytes
-        let slice = unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) };
-        // SAFETY: slice contains valid UTF-8 by construction
-        unsafe { str::from_utf8_unchecked_mut(slice) }
-    }
-
-    /// Clears the string by setting `len = 0`.
-    ///
-    /// The underlying memory is not zeroed.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<8>::new();
-    /// stack_string.push_str("hello");
-    /// assert!(!stack_string.is_empty());
-    ///
-    /// stack_string.clear();
-    /// assert!(stack_string.is_empty());
-    /// assert_eq!(stack_string.len(), 0);
-    /// assert_eq!(stack_string.as_str(), "");
-    /// ```
-    #[inline]
-    pub const fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    /// Returns the current length in bytes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<16>::new();
-    /// assert_eq!(stack_string.len(), 0);
-    /// stack_string.push_str("hello");
-    /// assert_eq!(stack_string.len(), 5);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns the capacity in bytes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let stack_string = StackString::<32>::new();
-    /// assert_eq!(stack_string.capacity(), 32);
-    /// ```
-    #[expect(clippy::inline_always, reason = "this method is trivial")]
-    #[inline(always)]
-    #[must_use]
-    pub const fn capacity(&self) -> usize {
-        N
-    }
-
-    /// Returns the remaining capacity in bytes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<10>::new();
-    /// assert_eq!(stack_string.remaining_capacity(), 10);
-    ///
-    /// stack_string.push_str("hello");
-    /// assert_eq!(stack_string.remaining_capacity(), 5);
-    ///
-    /// stack_string.push_str("world");
-    /// assert_eq!(stack_string.remaining_capacity(), 0);
-    /// assert!(stack_string.is_full());
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn remaining_capacity(&self) -> usize {
-        N - self.len
-    }
-
-    /// Returns `true` if the string is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<8>::new();
-    /// assert!(stack_string.is_empty());
-    /// stack_string.push('a');
-    /// assert!(!stack_string.is_empty());
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Returns `true` if the string is at full capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackString;
-    ///
-    /// let mut stack_string = StackString::<5>::new();
-    /// assert!(!stack_string.is_full());
-    /// stack_string.push_str("hello");
-    /// assert!(stack_string.is_full());
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn is_full(&self) -> bool {
-        self.len >= N
     }
 }
 

@@ -19,6 +19,21 @@ pub struct StackVec<T, const CAP: usize> {
 }
 
 impl<T, const CAP: usize> StackVec<T, CAP> {
+    /// Drops all initialized elements in the vector without resetting `self.len`.
+    #[inline]
+    fn drop_elements(&mut self, start: usize) {
+        if size_of::<T>() == 0 || mem::needs_drop::<T>() {
+            for i in start..self.len {
+                // SAFETY: i < self.len, so element is initialized
+                let elem = unsafe { self.buf.get_unchecked_mut(i) };
+                // SAFETY: elem points to initialized element
+                unsafe {
+                    elem.assume_init_drop();
+                }
+            }
+        }
+    }
+
     /// Creates a new [`StackVec`].
     ///
     /// # Examples
@@ -37,6 +52,127 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     #[inline]
     pub const fn new() -> Self {
         empty_collection!()
+    }
+
+    /// Clears the vector, dropping all initialized elements if necessary,
+    /// and resets the length to zero.
+    ///
+    /// For types `T` that implement [`Copy`] or do not require [`Drop`], this is
+    /// effectively just setting `len = 0` without running any destructors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// vec.push(1);
+    /// vec.push(2);
+    ///
+    /// vec.clear();
+    /// assert_eq!(vec.len(), 0);
+    /// assert!(vec.is_empty());
+    /// ```
+    #[inline]
+    pub fn clear(&mut self) {
+        self.drop_elements(0);
+        self.len = 0;
+    }
+
+    /// Returns the current length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// assert_eq!(vec.len(), 0);
+    /// vec.push(1);
+    /// assert_eq!(vec.len(), 1);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns the capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let v = StackVec::<i32, 16>::new();
+    /// assert_eq!(v.capacity(), 16);
+    /// ```
+    #[expect(clippy::inline_always, reason = "this method is trivial")]
+    #[inline(always)]
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        CAP
+    }
+
+    /// Returns the remaining capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 5>::new();
+    /// assert_eq!(vec.remaining_capacity(), 5);
+    ///
+    /// vec.push(1);
+    /// vec.push(2);
+    /// assert_eq!(vec.remaining_capacity(), 3);
+    ///
+    /// vec.extend_from_slice(&[3, 4, 5]);
+    /// assert_eq!(vec.remaining_capacity(), 0);
+    /// assert!(vec.is_full());
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn remaining_capacity(&self) -> usize {
+        CAP - self.len
+    }
+
+    /// Returns `true` if the vector is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// assert!(vec.is_empty());
+    /// vec.push(1);
+    /// assert!(!vec.is_empty());
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns `true` if the vector is at full capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 2>::new();
+    /// assert!(!vec.is_full());
+    /// vec.push(1);
+    /// vec.push(2);
+    /// assert!(vec.is_full());
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn is_full(&self) -> bool {
+        self.len >= CAP
     }
 
     /// Returns a raw pointer to the vector's buffer.
@@ -179,6 +315,384 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     pub const unsafe fn set_len(&mut self, new_len: usize) {
         debug_assert!(new_len <= CAP, "buffer capacity exceeded");
         self.len = new_len;
+    }
+
+    /// Truncates the vector to the specified length.
+    ///
+    /// Does nothing if `len >= self.len()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// vec.push(1);
+    /// vec.push(2);
+    /// vec.push(3);
+    ///
+    /// vec.truncate(2);
+    /// assert_eq!(vec.len(), 2);
+    /// assert_eq!(vec[0], 1);
+    /// assert_eq!(vec[1], 2);
+    ///
+    /// vec.truncate(10);
+    /// assert_eq!(vec.len(), 2);
+    /// ```
+    #[inline]
+    pub fn truncate(&mut self, len: usize) {
+        if len > self.len {
+            return;
+        }
+        self.drop_elements(len);
+        self.len = len;
+    }
+
+    /// Returns the contents as a slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// vec.extend_from_slice(&[1, 2, 3]);
+    /// assert_eq!(vec.as_slice(), &[1, 2, 3]);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_slice(&self) -> &[T] {
+        // SAFETY: First self.len elements are initialized
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    /// Returns the contents as a mutable slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// vec.extend_from_slice(&[1, 2, 3]);
+    /// let slice = vec.as_mut_slice();
+    /// slice[1] = 42;
+    /// assert_eq!(vec[1], 42);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub const fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: First self.len elements are initialized
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+
+    /// Returns an iterator over the slice.
+    ///
+    /// The iterator yields all items from start to end.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    ///  let mut vec = StackVec::<i32, 8>::new();
+    /// vec.push(1);
+    /// vec.push(2);
+    /// vec.push(3);
+    ///
+    /// let sum: i32 = vec.iter().sum();
+    /// assert_eq!(sum, 6);
+    /// ```
+    #[inline]
+    pub fn iter(&self) -> slice::Iter<'_, T> {
+        self.as_slice().iter()
+    }
+
+    /// Returns an iterator that allows modifying each value.
+    ///
+    /// The iterator yields all items from start to end.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    ///  let mut vec = StackVec::<i32, 8>::new();
+    /// vec.push(1);
+    /// vec.push(2);
+    /// vec.push(3);
+    ///
+    /// for x in vec.iter_mut() {
+    ///     *x *= 2;
+    /// }
+    /// assert_eq!(vec[0], 2);
+    /// assert_eq!(vec[1], 4);
+    /// assert_eq!(vec[2], 6);
+    /// ```
+    #[inline]
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
+        self.as_mut_slice().iter_mut()
+    }
+
+    /// Retains only elements that satisfy the predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_collections::StackVec;
+    ///
+    /// let mut vec = StackVec::<i32, 8>::new();
+    /// vec.extend_from_slice(&[1, 2, 3, 4, 5]);
+    ///
+    /// // Keep only numbers greater than 2
+    /// vec.retain(|x| *x > 2);
+    /// assert_eq!(vec.as_slice(), &[3, 4, 5]);
+    ///
+    /// // Keep all (no-op)
+    /// vec.retain(|_| true);
+    /// assert_eq!(vec.as_slice(), &[3, 4, 5]);
+    ///
+    /// // Remove all
+    /// vec.retain(|_| false);
+    /// assert!(vec.is_empty());
+    /// ```
+    #[inline]
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut T) -> bool,
+    {
+        let base_ptr = self.as_mut_ptr();
+        let mut kept = 0;
+
+        for i in 0..self.len {
+            // SAFETY: i < self.len, so this is a valid and initialized element
+            let ptr = unsafe { base_ptr.add(i) };
+            // SAFETY: ptr points to valid initialized element
+            let elem = unsafe { &mut *ptr };
+
+            if f(elem) {
+                if kept != i {
+                    // SAFETY: kept < i < self.len, ranges don't overlap
+                    let dst = unsafe { base_ptr.add(kept) };
+                    // SAFETY: Copying single element from valid source to valid dest
+                    unsafe {
+                        ptr::copy_nonoverlapping(ptr, dst, 1);
+                    }
+                }
+                kept += 1;
+            } else {
+                // SAFETY: Dropping initialized element that won't be kept
+                unsafe {
+                    ptr::drop_in_place(elem);
+                }
+            }
+        }
+
+        self.len = kept;
+    }
+
+    // index
+    define_variants! {
+        fn index(self: &Self, index: usize) -> &T,
+
+        normal_brief: "Returns a reference to the element at `index`",
+        try_brief: "Attempts to return a reference to the element at `index`",
+        unchecked_brief_suffix: "without bounds checking",
+        ub_conditions: {
+            index >= self.len => "index out of bounds",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: get_unchecked,
+        try_fn: get,
+        body: {
+            // SAFETY: Caller guarantees index < self.len
+            let ptr = unsafe { self.buf.as_ptr().add(index) };
+            // SAFETY: Creating reference to initialized element
+            let elem_ref = unsafe { &*ptr };
+            // SAFETY: Element at index is initialized
+            unsafe { elem_ref.assume_init_ref() }
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                /// vec.extend_from_slice(&[10, 20, 30]);
+                ///
+                /// assert_eq!(*vec.index(0), 10);
+                /// assert_eq!(*vec.index(1), 20);
+                /// assert_eq!(*vec.index(2), 30);
+                /// ```
+                ///
+                /// Panics on out-of-bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                /// let mut vec = StackVec::<i32, 8>::new();
+                ///
+                /// // this will panic at runtime
+                /// vec.index(0);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                /// vec.push(10);
+                /// vec.push(20);
+                /// vec.push(30);
+                ///
+                /// assert_eq!(vec.get(0), Some(&10));
+                /// assert_eq!(vec.get(10), None);
+                /// ```
+            }
+        }
+    }
+
+    // index_mut
+    define_variants! {
+        fn index_mut(self: &mut Self, index: usize) -> &mut T,
+
+        normal_brief: "Returns a mutable reference to the element at `index`",
+        try_brief: "Attempts to return a mutable reference to the element at `index`",
+        unchecked_brief_suffix: "without bounds checking",
+        ub_conditions: {
+            index >= self.len => "index out of bounds",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: get_unchecked_mut,
+        try_fn: get_mut,
+        body: {
+            // SAFETY: Caller guarantees index < self.len
+            let ptr = unsafe { self.buf.as_mut_ptr().add(index) };
+            // SAFETY: Creating mutable reference to initialized element
+            let elem_ref = unsafe { &mut *ptr };
+            // SAFETY: Element at index is initialized
+            unsafe { elem_ref.assume_init_mut() }
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                /// vec.extend_from_slice(&[10, 20, 30]);
+                ///
+                /// *vec.index_mut(1) = 42;
+                /// assert_eq!(vec[1], 42);
+                /// ```
+                ///
+                /// Panics on out-of-bounds:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                /// let mut vec = StackVec::<i32, 8>::new();
+                ///
+                /// // this will panic at runtime
+                /// vec.index_mut(0);
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                /// vec.push(10);
+                /// vec.push(20);
+                /// vec.push(30);
+                ///
+                /// if let Some(val) = vec.get_mut(1) {
+                ///     *val = 42;
+                /// }
+                /// assert_eq!(vec[1], 42);
+                ///
+                /// assert_eq!(vec.get_mut(10), None);
+                /// ```
+            }
+        }
+    }
+
+    // pop
+    define_variants! {
+        fn pop(self: &mut Self) -> T,
+
+        normal_brief: "Removes and returns the last element",
+        try_brief: "Attempts to remove and return the last element",
+        unchecked_brief_suffix: "without bound checking",
+        ub_conditions: {
+            self.is_empty() => "vector is empty",
+        },
+        prefixes: {
+            normal: {pub const},
+            unchecked: {pub const},
+            try: {pub const},
+        },
+        unchecked_fn: pop_unchecked,
+        try_fn: try_pop,
+        body: {
+            self.len -= 1;
+            // SAFETY: self.len was > 0, now points to last initialized element
+            let ptr = unsafe { self.as_ptr().add(self.len) };
+            // SAFETY: Reading from initialized element
+            unsafe { ptr.read() }
+        },
+        examples: {
+            normal: {
+                /// Basic usage:
+                ///
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                /// vec.push(1);
+                /// vec.push(2);
+                /// vec.push(3);
+                ///
+                /// assert_eq!(vec.pop(), 3);
+                /// assert_eq!(vec.len(), 2);
+                /// assert_eq!(vec.pop(), 2);
+                /// assert_eq!(vec.pop(), 1);
+                /// assert!(vec.is_empty());
+                /// ```
+                ///
+                /// A panic if the vector is empty:
+                ///
+                /// ```should_panic
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                ///
+                /// // this will panic at runtime
+                /// vec.pop();
+                /// ```
+            }
+            try: {
+                /// ```
+                /// use stack_collections::StackVec;
+                ///
+                /// let mut vec = StackVec::<i32, 8>::new();
+                /// assert_eq!(vec.try_pop(), None);
+                ///
+                /// vec.push(42);
+                /// assert_eq!(vec.try_pop(), Some(42));
+                /// assert_eq!(vec.try_pop(), None);
+                /// ```
+            }
+        }
     }
 
     // push
@@ -434,75 +948,6 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         }
     }
 
-    // pop
-    define_variants! {
-        fn pop(self: &mut Self) -> T,
-
-        normal_brief: "Removes and returns the last element",
-        try_brief: "Attempts to remove and return the last element",
-        unchecked_brief_suffix: "without bound checking",
-        ub_conditions: {
-            self.is_empty() => "vector is empty",
-        },
-        prefixes: {
-            normal: {pub const},
-            unchecked: {pub const},
-            try: {pub const},
-        },
-        unchecked_fn: pop_unchecked,
-        try_fn: try_pop,
-        body: {
-            self.len -= 1;
-            // SAFETY: self.len was > 0, now points to last initialized element
-            let ptr = unsafe { self.as_ptr().add(self.len) };
-            // SAFETY: Reading from initialized element
-            unsafe { ptr.read() }
-        },
-        examples: {
-            normal: {
-                /// Basic usage:
-                ///
-                /// ```
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                /// vec.push(1);
-                /// vec.push(2);
-                /// vec.push(3);
-                ///
-                /// assert_eq!(vec.pop(), 3);
-                /// assert_eq!(vec.len(), 2);
-                /// assert_eq!(vec.pop(), 2);
-                /// assert_eq!(vec.pop(), 1);
-                /// assert!(vec.is_empty());
-                /// ```
-                ///
-                /// A panic if the vector is empty:
-                ///
-                /// ```should_panic
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                ///
-                /// // this will panic at runtime
-                /// vec.pop();
-                /// ```
-            }
-            try: {
-                /// ```
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                /// assert_eq!(vec.try_pop(), None);
-                ///
-                /// vec.push(42);
-                /// assert_eq!(vec.try_pop(), Some(42));
-                /// assert_eq!(vec.try_pop(), None);
-                /// ```
-            }
-        }
-    }
-
     // swap_remove
     define_variants! {
         fn swap_remove(self: &mut Self, index: usize) -> T,
@@ -595,141 +1040,7 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         }
     }
 
-    // index
-    define_variants! {
-        fn index(self: &Self, index: usize) -> &T,
-
-        normal_brief: "Returns a reference to the element at `index`",
-        try_brief: "Attempts to return a reference to the element at `index`",
-        unchecked_brief_suffix: "without bounds checking",
-        ub_conditions: {
-            index >= self.len => "index out of bounds",
-        },
-        prefixes: {
-            normal: {pub const},
-            unchecked: {pub const},
-            try: {pub const},
-        },
-        unchecked_fn: get_unchecked,
-        try_fn: get,
-        body: {
-            // SAFETY: Caller guarantees index < self.len
-            let ptr = unsafe { self.buf.as_ptr().add(index) };
-            // SAFETY: Creating reference to initialized element
-            let elem_ref = unsafe { &*ptr };
-            // SAFETY: Element at index is initialized
-            unsafe { elem_ref.assume_init_ref() }
-        },
-        examples: {
-            normal: {
-                /// Basic usage:
-                ///
-                /// ```
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                /// vec.extend_from_slice(&[10, 20, 30]);
-                ///
-                /// assert_eq!(*vec.index(0), 10);
-                /// assert_eq!(*vec.index(1), 20);
-                /// assert_eq!(*vec.index(2), 30);
-                /// ```
-                ///
-                /// Panics on out-of-bounds:
-                ///
-                /// ```should_panic
-                /// use stack_collections::StackVec;
-                /// let mut vec = StackVec::<i32, 8>::new();
-                ///
-                /// // this will panic at runtime
-                /// vec.index(0);
-                /// ```
-            }
-            try: {
-                /// ```
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                /// vec.push(10);
-                /// vec.push(20);
-                /// vec.push(30);
-                ///
-                /// assert_eq!(vec.get(0), Some(&10));
-                /// assert_eq!(vec.get(10), None);
-                /// ```
-            }
-        }
-    }
-
-    // index_mut
-    define_variants! {
-        fn index_mut(self: &mut Self, index: usize) -> &mut T,
-
-        normal_brief: "Returns a mutable reference to the element at `index`",
-        try_brief: "Attempts to return a mutable reference to the element at `index`",
-        unchecked_brief_suffix: "without bounds checking",
-        ub_conditions: {
-            index >= self.len => "index out of bounds",
-        },
-        prefixes: {
-            normal: {pub const},
-            unchecked: {pub const},
-            try: {pub const},
-        },
-        unchecked_fn: get_unchecked_mut,
-        try_fn: get_mut,
-        body: {
-            // SAFETY: Caller guarantees index < self.len
-            let ptr = unsafe { self.buf.as_mut_ptr().add(index) };
-            // SAFETY: Creating mutable reference to initialized element
-            let elem_ref = unsafe { &mut *ptr };
-            // SAFETY: Element at index is initialized
-            unsafe { elem_ref.assume_init_mut() }
-        },
-        examples: {
-            normal: {
-                /// Basic usage:
-                ///
-                /// ```
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                /// vec.extend_from_slice(&[10, 20, 30]);
-                ///
-                /// *vec.index_mut(1) = 42;
-                /// assert_eq!(vec[1], 42);
-                /// ```
-                ///
-                /// Panics on out-of-bounds:
-                ///
-                /// ```should_panic
-                /// use stack_collections::StackVec;
-                /// let mut vec = StackVec::<i32, 8>::new();
-                ///
-                /// // this will panic at runtime
-                /// vec.index_mut(0);
-                /// ```
-            }
-            try: {
-                /// ```
-                /// use stack_collections::StackVec;
-                ///
-                /// let mut vec = StackVec::<i32, 8>::new();
-                /// vec.push(10);
-                /// vec.push(20);
-                /// vec.push(30);
-                ///
-                /// if let Some(val) = vec.get_mut(1) {
-                ///     *val = 42;
-                /// }
-                /// assert_eq!(vec[1], 42);
-                ///
-                /// assert_eq!(vec.get_mut(10), None);
-                /// ```
-            }
-        }
-    }
-
+    // extend_from_slice
     define_variants! {
         fn extend_from_slice(self: &mut Self, slice: &[T]) -> (),
         where_clause: { T: Clone }
@@ -807,315 +1118,6 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
                 /// ```
             }
         }
-    }
-
-    /// Retains only elements that satisfy the predicate.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// vec.extend_from_slice(&[1, 2, 3, 4, 5]);
-    ///
-    /// // Keep only numbers greater than 2
-    /// vec.retain(|x| *x > 2);
-    /// assert_eq!(vec.as_slice(), &[3, 4, 5]);
-    ///
-    /// // Keep all (no-op)
-    /// vec.retain(|_| true);
-    /// assert_eq!(vec.as_slice(), &[3, 4, 5]);
-    ///
-    /// // Remove all
-    /// vec.retain(|_| false);
-    /// assert!(vec.is_empty());
-    /// ```
-    #[inline]
-    pub fn retain<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&mut T) -> bool,
-    {
-        let base_ptr = self.as_mut_ptr();
-        let mut kept = 0;
-
-        for i in 0..self.len {
-            // SAFETY: i < self.len, so this is a valid and initialized element
-            let ptr = unsafe { base_ptr.add(i) };
-            // SAFETY: ptr points to valid initialized element
-            let elem = unsafe { &mut *ptr };
-
-            if f(elem) {
-                if kept != i {
-                    // SAFETY: kept < i < self.len, ranges don't overlap
-                    let dst = unsafe { base_ptr.add(kept) };
-                    // SAFETY: Copying single element from valid source to valid dest
-                    unsafe {
-                        ptr::copy_nonoverlapping(ptr, dst, 1);
-                    }
-                }
-                kept += 1;
-            } else {
-                // SAFETY: Dropping initialized element that won't be kept
-                unsafe {
-                    ptr::drop_in_place(elem);
-                }
-            }
-        }
-
-        self.len = kept;
-    }
-    /// Returns the contents as a slice.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// vec.extend_from_slice(&[1, 2, 3]);
-    /// assert_eq!(vec.as_slice(), &[1, 2, 3]);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_slice(&self) -> &[T] {
-        // SAFETY: First self.len elements are initialized
-        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
-    }
-
-    /// Returns the contents as a mutable slice.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// vec.extend_from_slice(&[1, 2, 3]);
-    /// let slice = vec.as_mut_slice();
-    /// slice[1] = 42;
-    /// assert_eq!(vec[1], 42);
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn as_mut_slice(&mut self) -> &mut [T] {
-        // SAFETY: First self.len elements are initialized
-        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
-    }
-
-    /// Returns an iterator over the slice.
-    ///
-    /// The iterator yields all items from start to end.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    ///  let mut vec = StackVec::<i32, 8>::new();
-    /// vec.push(1);
-    /// vec.push(2);
-    /// vec.push(3);
-    ///
-    /// let sum: i32 = vec.iter().sum();
-    /// assert_eq!(sum, 6);
-    /// ```
-    #[inline]
-    pub fn iter(&self) -> slice::Iter<'_, T> {
-        self.as_slice().iter()
-    }
-
-    /// Returns an iterator that allows modifying each value.
-    ///
-    /// The iterator yields all items from start to end.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    ///  let mut vec = StackVec::<i32, 8>::new();
-    /// vec.push(1);
-    /// vec.push(2);
-    /// vec.push(3);
-    ///
-    /// for x in vec.iter_mut() {
-    ///     *x *= 2;
-    /// }
-    /// assert_eq!(vec[0], 2);
-    /// assert_eq!(vec[1], 4);
-    /// assert_eq!(vec[2], 6);
-    /// ```
-    #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
-        self.as_mut_slice().iter_mut()
-    }
-
-    /// Drops all initialized elements in the vector without resetting `self.len`.
-    #[inline]
-    fn drop_elements(&mut self, start: usize) {
-        if size_of::<T>() == 0 || mem::needs_drop::<T>() {
-            for i in start..self.len {
-                // SAFETY: i < self.len, so element is initialized
-                let elem = unsafe { self.buf.get_unchecked_mut(i) };
-                // SAFETY: elem points to initialized element
-                unsafe {
-                    elem.assume_init_drop();
-                }
-            }
-        }
-    }
-
-    /// Truncates the vector to the specified length.
-    ///
-    /// Does nothing if `len >= self.len()`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// vec.push(1);
-    /// vec.push(2);
-    /// vec.push(3);
-    ///
-    /// vec.truncate(2);
-    /// assert_eq!(vec.len(), 2);
-    /// assert_eq!(vec[0], 1);
-    /// assert_eq!(vec[1], 2);
-    ///
-    /// vec.truncate(10);
-    /// assert_eq!(vec.len(), 2);
-    /// ```
-    #[inline]
-    pub fn truncate(&mut self, len: usize) {
-        if len > self.len {
-            return;
-        }
-        self.drop_elements(len);
-        self.len = len;
-    }
-
-    /// Clears the vector, dropping all initialized elements if necessary,
-    /// and resets the length to zero.
-    ///
-    /// For types `T` that implement [`Copy`] or do not require [`Drop`], this is
-    /// effectively just setting `len = 0` without running any destructors.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// vec.push(1);
-    /// vec.push(2);
-    ///
-    /// vec.clear();
-    /// assert_eq!(vec.len(), 0);
-    /// assert!(vec.is_empty());
-    /// ```
-    #[inline]
-    pub fn clear(&mut self) {
-        self.drop_elements(0);
-        self.len = 0;
-    }
-
-    /// Returns the current length.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// assert_eq!(vec.len(), 0);
-    /// vec.push(1);
-    /// assert_eq!(vec.len(), 1);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns the capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let v = StackVec::<i32, 16>::new();
-    /// assert_eq!(v.capacity(), 16);
-    /// ```
-    #[expect(clippy::inline_always, reason = "this method is trivial")]
-    #[inline(always)]
-    #[must_use]
-    pub const fn capacity(&self) -> usize {
-        CAP
-    }
-
-    /// Returns the remaining capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 5>::new();
-    /// assert_eq!(vec.remaining_capacity(), 5);
-    ///
-    /// vec.push(1);
-    /// vec.push(2);
-    /// assert_eq!(vec.remaining_capacity(), 3);
-    ///
-    /// vec.extend_from_slice(&[3, 4, 5]);
-    /// assert_eq!(vec.remaining_capacity(), 0);
-    /// assert!(vec.is_full());
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn remaining_capacity(&self) -> usize {
-        CAP - self.len
-    }
-
-    /// Returns `true` if the vector is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 8>::new();
-    /// assert!(vec.is_empty());
-    /// vec.push(1);
-    /// assert!(!vec.is_empty());
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Returns `true` if the vector is at full capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_collections::StackVec;
-    ///
-    /// let mut vec = StackVec::<i32, 2>::new();
-    /// assert!(!vec.is_full());
-    /// vec.push(1);
-    /// vec.push(2);
-    /// assert!(vec.is_full());
-    /// ```
-    #[must_use]
-    #[inline]
-    pub const fn is_full(&self) -> bool {
-        self.len >= CAP
     }
 }
 
