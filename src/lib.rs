@@ -109,7 +109,7 @@ mod internal {
         ///
         #[doc = concat!(" See also [`Self::", stringify!($name), "`] for the panic-on-error version and [`Self::", stringify!($unchecked_fn), "`] for the unchecked version.")]
         ///
-        /// Returns `None` if any of these conditions are **`false`**:
+        /// Returns [`None`] if any of these conditions are **`false`**:
         $( #[doc = concat!(" - `", stringify!($ub_condition), "`")] )+
         $(
             ///
