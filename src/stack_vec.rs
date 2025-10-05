@@ -1039,11 +1039,12 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
             }
         }
     }
+}
 
+impl<T: Clone, const CAP: usize> StackVec<T, CAP> {
     // extend_from_slice
     define_variants! {
         fn extend_from_slice(self: &mut Self, slice: &[T]) -> (),
-        where_clause: { T: Clone }
 
         normal_brief: "Extends the vector from a slice",
         try_brief: "Attempts to extend the vector from a slice",
