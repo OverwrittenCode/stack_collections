@@ -456,7 +456,7 @@ impl<const N: usize> StackString<N> {
                     dst2.write(TAG_CONT | ((code & CONT_MASK) as u8));
                 }
             }
-            _ => {
+            4 => {
                 // SAFETY: Caller ensures dst has space for byte 0
                 unsafe {
                     dst.write(TAG_FOUR_B | ((code >> 18_u32) as u8));
@@ -479,6 +479,11 @@ impl<const N: usize> StackString<N> {
                 unsafe {
                     dst3.write(TAG_CONT | ((code & CONT_MASK) as u8));
                 }
+            }
+            _ => {
+                // SAFETY: the caller promises that value_len satisfies one of the above matches
+                // for valid char encoding
+                unsafe { unreachable_unchecked() }
             }
         }
     }
