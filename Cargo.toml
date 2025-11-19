@@ -1,6 +1,6 @@
 [package]
 name = "stack_collections"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 authors = ["Kyle Thapar <kylethapar2007@outlook.com>"]
 description = "Stack-allocated collections for Rust"
