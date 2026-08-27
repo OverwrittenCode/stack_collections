@@ -461,34 +461,71 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     where
         F: FnMut(&mut T) -> bool,
     {
-        let base_ptr = self.as_mut_ptr();
-        let mut kept = 0;
+        // Both the predicate and a removed element's `Drop` are user code and
+        // may unwind. Retire the whole buffer up front and let a guard restore
+        // a correct length on every exit path, so a duplicated or
+        // already-dropped slot can never stay inside `0..len`.
+        let original_len = self.len;
+        self.len = 0;
 
-        for i in 0..self.len {
-            // SAFETY: i < self.len, so this is a valid and initialized element
-            let ptr = unsafe { base_ptr.add(i) };
-            // SAFETY: ptr points to valid initialized element
-            let elem = unsafe { &mut *ptr };
+        struct BackshiftOnDrop<'vec, T, const CAP: usize> {
+            vec: &'vec mut StackVec<T, CAP>,
+            processed: usize,
+            deleted: usize,
+            original_len: usize,
+        }
 
-            if f(elem) {
-                if kept != i {
-                    // SAFETY: kept < i < self.len, ranges don't overlap
-                    let dst = unsafe { base_ptr.add(kept) };
-                    // SAFETY: Copying single element from valid source to valid dest
+        impl<T, const CAP: usize> Drop for BackshiftOnDrop<'_, T, CAP> {
+            fn drop(&mut self) {
+                if self.deleted > 0 {
+                    // SAFETY: the unprocessed tail is still initialized and the
+                    //         destination range is inside the buffer.
                     unsafe {
-                        ptr::copy_nonoverlapping(ptr, dst, 1);
+                        ptr::copy(
+                            self.vec.as_ptr().add(self.processed),
+                            self.vec.as_mut_ptr().add(self.processed - self.deleted),
+                            self.original_len - self.processed,
+                        );
                     }
                 }
-                kept += 1;
-            } else {
-                // SAFETY: Dropping initialized element that won't be kept
-                unsafe {
-                    ptr::drop_in_place(elem);
-                }
+                self.vec.len = self.original_len - self.deleted;
             }
         }
 
-        self.len = kept;
+        let mut g = BackshiftOnDrop {
+            vec: self,
+            processed: 0,
+            deleted: 0,
+            original_len,
+        };
+
+        while g.processed < original_len {
+            // SAFETY: processed < original_len, so this element is initialized.
+            let ptr = unsafe { g.vec.as_mut_ptr().add(g.processed) };
+            // SAFETY: ptr points to a valid initialized element.
+            let elem = unsafe { &mut *ptr };
+
+            if f(elem) {
+                if g.deleted > 0 {
+                    // SAFETY: the destination is an earlier, already-vacated slot.
+                    unsafe {
+                        let dst = g.vec.as_mut_ptr().add(g.processed - g.deleted);
+                        ptr::copy_nonoverlapping(ptr, dst, 1);
+                    }
+                }
+                g.processed += 1;
+            } else {
+                // Count the slot out before destroying it, so an unwinding
+                // `Drop` leaves the guard with a consistent view.
+                g.processed += 1;
+                g.deleted += 1;
+                // SAFETY: dropping an initialized element that won't be kept.
+                unsafe {
+                    ptr::drop_in_place(ptr);
+                }
+            }
+        }
+        // `g`'s `Drop` commits the final length.
     }
 
     // index
@@ -1836,5 +1873,85 @@ mod tests {
 
         drop(iter);
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    /// A panic in `retain` must not leave a duplicated or already-destroyed
+    /// slot inside `0..len`.
+    #[cfg(feature = "std")]
+    #[test]
+    fn retain_panicking_predicate() {
+        extern crate std;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        struct DropCounter(i32, Arc<AtomicUsize>);
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut vec = StackVec::<DropCounter, 8>::new();
+        for i in 0..4_i32 {
+            vec.push(DropCounter(i, Arc::clone(&counter)));
+        }
+
+        // Reject element 0 so the next kept one is compacted forward, then
+        // unwind on element 2 before the length is committed.
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            vec.retain(|e| {
+                assert_ne!(e.0, 2_i32, "predicate panics");
+                e.0 != 0_i32
+            });
+        }));
+        assert!(r.is_err(), "the predicate should have panicked");
+
+        drop(vec);
+
+        // Four elements exist. Fewer drops mean a leak, which is sound; more
+        // mean a value was destroyed twice.
+        let drops = counter.load(Ordering::SeqCst);
+        assert!(drops <= 4, "{drops} drops for 4 elements");
+    }
+
+    /// The same, with the panic coming from a removed element's `Drop`.
+    #[cfg(feature = "std")]
+    #[test]
+    fn retain_panicking_element_drop() {
+        extern crate std;
+        use core::cell::Cell;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        std::thread_local! {
+            static ARMED: Cell<bool> = const { Cell::new(false) };
+        }
+
+        struct Boom(i32, Arc<AtomicUsize>);
+        impl Drop for Boom {
+            fn drop(&mut self) {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                if ARMED.with(|a| a.replace(false)) {
+                    panic!("element Drop panics");
+                }
+            }
+        }
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut vec = StackVec::<Boom, 8>::new();
+        for i in 0..4_i32 {
+            vec.push(Boom(i, Arc::clone(&counter)));
+        }
+
+        ARMED.with(|a| a.set(true));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            vec.retain(|e| e.0 != 1_i32);
+        }));
+        ARMED.with(|a| a.set(false));
+        assert!(r.is_err(), "the armed Drop should have panicked");
+
+        drop(vec);
+
+        let drops = counter.load(Ordering::SeqCst);
+        assert!(drops <= 4, "{drops} drops for 4 elements");
     }
 }
