@@ -478,12 +478,16 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         impl<T, const CAP: usize> Drop for BackshiftOnDrop<'_, T, CAP> {
             fn drop(&mut self) {
                 if self.deleted > 0 {
+                    let base = self.vec.as_mut_ptr();
                     // SAFETY: the unprocessed tail is still initialized and the
-                    //         destination range is inside the buffer.
+                    //         destination range is inside the buffer. Deriving
+                    //         both pointers from a single reborrow avoids
+                    //         invalidating an earlier shared reborrow under
+                    //         Stacked Borrows.
                     unsafe {
                         ptr::copy(
-                            self.vec.as_ptr().add(self.processed),
-                            self.vec.as_mut_ptr().add(self.processed - self.deleted),
+                            base.add(self.processed),
+                            base.add(self.processed - self.deleted),
                             self.original_len - self.processed,
                         );
                     }
@@ -500,16 +504,21 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
         };
 
         while g.processed < original_len {
+            let base = g.vec.as_mut_ptr();
+
             // SAFETY: processed < original_len, so this element is initialized.
-            let ptr = unsafe { g.vec.as_mut_ptr().add(g.processed) };
+            let ptr = unsafe { base.add(g.processed) };
             // SAFETY: ptr points to a valid initialized element.
             let elem = unsafe { &mut *ptr };
 
             if f(elem) {
                 if g.deleted > 0 {
-                    // SAFETY: the destination is an earlier, already-vacated slot.
+                    // SAFETY: dst is an earlier, already-vacated slot; ptr and dst
+                    //         both derive from the same reborrow, so neither
+                    //         invalidates the other.
+                    let dst = unsafe { base.add(g.processed - g.deleted) };
+                    // SAFETY: copying a single initialized element to a vacated slot.
                     unsafe {
-                        let dst = g.vec.as_mut_ptr().add(g.processed - g.deleted);
                         ptr::copy_nonoverlapping(ptr, dst, 1);
                     }
                 }
@@ -1881,7 +1890,8 @@ mod tests {
     #[test]
     fn retain_panicking_predicate() {
         extern crate std;
-        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use core::panic::AssertUnwindSafe;
+        use std::panic::catch_unwind;
 
         struct DropCounter(i32, Arc<AtomicUsize>);
         impl Drop for DropCounter {
@@ -1920,7 +1930,8 @@ mod tests {
     fn retain_panicking_element_drop() {
         extern crate std;
         use core::cell::Cell;
-        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use core::panic::AssertUnwindSafe;
+        use std::panic::catch_unwind;
 
         std::thread_local! {
             static ARMED: Cell<bool> = const { Cell::new(false) };
@@ -1930,9 +1941,7 @@ mod tests {
         impl Drop for Boom {
             fn drop(&mut self) {
                 self.1.fetch_add(1, Ordering::SeqCst);
-                if ARMED.with(|a| a.replace(false)) {
-                    panic!("element Drop panics");
-                }
+                assert!(!ARMED.replace(false), "element Drop panics");
             }
         }
 
