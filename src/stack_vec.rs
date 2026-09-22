@@ -461,13 +461,6 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
     where
         F: FnMut(&mut T) -> bool,
     {
-        // Both the predicate and a removed element's `Drop` are user code and
-        // may unwind. Retire the whole buffer up front and let a guard restore
-        // a correct length on every exit path, so a duplicated or
-        // already-dropped slot can never stay inside `0..len`.
-        let original_len = self.len;
-        self.len = 0;
-
         struct BackshiftOnDrop<'vec, T, const CAP: usize> {
             vec: &'vec mut StackVec<T, CAP>,
             processed: usize,
@@ -479,22 +472,29 @@ impl<T, const CAP: usize> StackVec<T, CAP> {
             fn drop(&mut self) {
                 if self.deleted > 0 {
                     let base = self.vec.as_mut_ptr();
-                    // SAFETY: the unprocessed tail is still initialized and the
-                    //         destination range is inside the buffer. Deriving
-                    //         both pointers from a single reborrow avoids
-                    //         invalidating an earlier shared reborrow under
-                    //         Stacked Borrows.
+                    // SAFETY: processed and processed - deleted are both
+                    //         within bounds of the buffer.
+                    let src = unsafe { base.add(self.processed) };
+                    // SAFETY: see above.
+                    let dst = unsafe { base.add(self.processed - self.deleted) };
+                    // SAFETY: the unprocessed tail is still initialized and
+                    //         the destination range is inside the buffer.
+                    //         src/dst derive from a single reborrow, so
+                    //         neither invalidates the other.
                     unsafe {
-                        ptr::copy(
-                            base.add(self.processed),
-                            base.add(self.processed - self.deleted),
-                            self.original_len - self.processed,
-                        );
+                        ptr::copy(src, dst, self.original_len - self.processed);
                     }
                 }
                 self.vec.len = self.original_len - self.deleted;
             }
         }
+
+        // Both the predicate and a removed element's `Drop` are user code and
+        // may unwind. Retire the whole buffer up front and let a guard restore
+        // a correct length on every exit path, so a duplicated or
+        // already-dropped slot can never stay inside `0..len`.
+        let original_len = self.len;
+        self.len = 0;
 
         let mut g = BackshiftOnDrop {
             vec: self,
@@ -1951,11 +1951,11 @@ mod tests {
             vec.push(Boom(i, Arc::clone(&counter)));
         }
 
-        ARMED.with(|a| a.set(true));
+        ARMED.set(true);
         let r = catch_unwind(AssertUnwindSafe(|| {
             vec.retain(|e| e.0 != 1_i32);
         }));
-        ARMED.with(|a| a.set(false));
+        ARMED.set(false);
         assert!(r.is_err(), "the armed Drop should have panicked");
 
         drop(vec);
